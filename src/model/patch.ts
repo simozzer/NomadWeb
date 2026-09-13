@@ -102,10 +102,43 @@ export class PatchReader {
   }
 
   read(bitstream: Uint8Array): Patch {
+    return this.build(this.collectSections(bitstream, new Map()));
+  }
+
+  /**
+   * Reads a patch delivered as separate parts.
+   *
+   * Each part answered by the device is its own bitstream, and the original
+   * parses them one at a time into a shared builder rather than joining them
+   * (`GetPatchWorker` calls `NmUtils.parsePatchMessage` per message). Joining
+   * is wrong because a part's bit length need not be a multiple of eight, so
+   * concatenating the byte-padded results injects stray bits between sections.
+   */
+  readParts(parts: Uint8Array[]): Patch {
+    const sections = new Map<number, Decoded[]>();
+    let parsed = 0;
+
+    for (const part of parts) {
+      if (!part.length) continue;
+      try {
+        this.collectSections(part, sections);
+        parsed++;
+      } catch {
+        // One unreadable part should not lose the rest of the patch.
+      }
+    }
+
+    if (!parsed) throw new Error(`none of the ${parts.length} patch parts could be read`);
+    return this.build(sections);
+  }
+
+  /** Walks `Patch := Section$section ?Patch$next`, adding to `sections`. */
+  private collectSections(
+    bitstream: Uint8Array,
+    sections: Map<number, Decoded[]>,
+  ): Map<number, Decoded[]> {
     const result = this.decoder.decode(bitstream);
 
-    const sections = new Map<number, Decoded[]>();
-    // `Patch := Section$section ?Patch$next` — walk the chain.
     for (let node: Decoded | undefined = result.root; node; node = one(node, 'next')) {
       const section = one(node, 'section');
       if (!section) continue;
@@ -116,6 +149,10 @@ export class PatchReader {
       sections.set(type, list);
     }
 
+    return sections;
+  }
+
+  private build(sections: Map<number, Decoded[]>): Patch {
     const patch: Patch = {
       name: this.readName(sections),
       modules: this.readModules(sections),

@@ -506,8 +506,15 @@ async function main(): Promise<void> {
         return;
       }
 
-      const patch = patchReader.read(report.bitstream);
+      log('info', `part sizes: ${report.parts.map((p) => p.length).join(', ')} bytes`);
+
+      const patch = patchReader.readParts(report.parts);
       currentPatch = patch;
+      log(
+        'info',
+        `patch "${patch.name}": sections ${[...patch.sections.keys()].sort((a, b) => a - b).join(', ')} · ` +
+          `${patch.modules.length} modules, ${patch.cables.length} cables`,
+      );
       // Land on whichever area actually has modules.
       if (!patch.modules.some((m) => m.area === currentArea)) {
         currentArea = patch.modules.some((m) => m.area === 'common') ? 'common' : 'voice';

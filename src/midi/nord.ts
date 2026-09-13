@@ -159,8 +159,8 @@ export function unpack7Bit(payload: Uint8Array): Uint8Array {
 }
 
 export interface PatchDumpReport {
-  /** The reassembled patch bitstream; empty if no packets arrived. */
-  bitstream: Uint8Array;
+  /** One unpacked bitstream per answered part, parsed separately. */
+  parts: Uint8Array[];
   packets: number;
   payloadBytes: number;
   /** Complete packet runs seen; one per answered part. */
@@ -537,29 +537,24 @@ export class NordModular {
     const build = (): PatchDumpReport => {
       if (current.length) runs.push(current);
 
-      const sections = runs.map((run) => {
+      // Each run is one answered part and is unpacked on its own. They are
+      // deliberately not joined: a part's bit length need not be a multiple of
+      // eight, so concatenating byte-padded results would inject stray bits.
+      const parts = runs.map((run) => {
         const size = run.reduce((n, p) => n + p.length, 0);
         const joined = new Uint8Array(size);
         let offset = 0;
-        for (const part of run) {
-          joined.set(part, offset);
-          offset += part.length;
+        for (const chunk of run) {
+          joined.set(chunk, offset);
+          offset += chunk.length;
         }
         return unpack7Bit(joined);
       });
 
-      const total = sections.reduce((n, s) => n + s.length, 0);
-      const bitstream = new Uint8Array(total);
-      let offset = 0;
-      for (const section of sections) {
-        bitstream.set(section, offset);
-        offset += section.length;
-      }
-
       return {
-        bitstream,
+        parts,
         packets,
-        payloadBytes: total,
+        payloadBytes: parts.reduce((n, s) => n + s.length, 0),
         runs: runs.length,
         sawFirst,
         sawLast,
@@ -727,7 +722,7 @@ export class NordModular {
       patchId = await ack;
     } catch (error) {
       return {
-        bitstream: new Uint8Array(0),
+        parts: [],
         packets: 0, payloadBytes: 0, runs: 0,
         sawFirst: false, sawLast: false,
         otherMessages: [(error as Error).message],

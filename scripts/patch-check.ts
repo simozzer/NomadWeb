@@ -170,5 +170,66 @@ process.stdout.write('\nPatch bitstream round-trip\n');
     JSON.stringify(patch.modules[0].name));
 }
 
+process.stdout.write('\nParts parsed separately (not concatenated)\n');
+{
+  const chars = (s: string) => ({ chars: Array.from(s, (c) => c.charCodeAt(0)) });
+
+  // Each part arrives as its own bitstream, exactly as the device sends them.
+  const namePart = patchEncoder.encode({
+    section: { type: SECTION.PatchName, data: { name: chars('Split Patch') } },
+  });
+  const modulePart = patchEncoder.encode({
+    section: {
+      type: SECTION.ModuleDump,
+      data: {
+        section: 0, nmodules: 2,
+        modules: [
+          { type: 20, index: 1, xpos: 0, ypos: 0 },
+          { type: 4, index: 2, xpos: 1, ypos: 3 },
+        ],
+      },
+    },
+  });
+  const commonPart = patchEncoder.encode({
+    section: {
+      type: SECTION.ModuleDump,
+      data: {
+        section: 1, nmodules: 1,
+        modules: [{ type: 7, index: 1, xpos: 0, ypos: 0 }],
+      },
+    },
+  });
+  const cablePart = patchEncoder.encode({
+    section: {
+      type: SECTION.CableDump,
+      data: {
+        section: 0, ncables: 1,
+        cables: [{ color: 1, source: 1, inputOutput: 5, type: 1, destination: 2, input: 0 }],
+      },
+    },
+  });
+
+  const parts = [namePart, modulePart, commonPart, cablePart];
+  process.stdout.write(`  part sizes: ${parts.map((p) => p.length).join(', ')} bytes\n`);
+
+  const patch = patchReader.readParts(parts);
+  check('name from its own part', patch.name === 'Split Patch', JSON.stringify(patch.name));
+  check('modules merged across parts', patch.modules.length === 3, `${patch.modules.length}`);
+  check('voice and common areas both present',
+    patch.modules.filter((m) => m.area === 'voice').length === 2 &&
+      patch.modules.filter((m) => m.area === 'common').length === 1, '');
+  check('cable from its own part', patch.cables.length === 1, `${patch.cables.length}`);
+
+  // An unreadable part must not lose the others.
+  const withJunk = [...parts, Uint8Array.from([0xff, 0xff, 0xff])];
+  const survived = patchReader.readParts(withJunk);
+  check('an unreadable part is skipped, the rest survive',
+    survived.modules.length === 3, `${survived.modules.length} modules`);
+
+  let threw = false;
+  try { patchReader.readParts([Uint8Array.from([0xff, 0xff])]); } catch { threw = true; }
+  check('all-unreadable is an error, not a silent empty patch', threw, '');
+}
+
 process.stdout.write(`\n${pass} ok, ${fail} failed\n`);
 process.exit(fail === 0 ? 0 : 1);
