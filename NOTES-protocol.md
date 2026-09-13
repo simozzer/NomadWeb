@@ -259,3 +259,33 @@ A wrong code, or a right code with a wrong payload layout, lands on a
 destructive command. Anything derived from bytecode should come from
 `disasm.ts`, never from a byte scan, and should be checked against
 `parts-check.ts` before it reaches hardware.
+
+## Reading a patch is a two-stage handshake
+
+This is the piece that was missing, and it explains every failed attempt above.
+`NmSlot.requestPatch()` runs two workers in sequence:
+
+**Stage 1 — `ReqPatchWorker`.** Sends `RequestPatchMessage(slot)` and waits up to
+2 s for an ACK addressed to that slot. `RequestPatch` returns **no patch data**;
+its ACK's `pid1` is the *transfer id*:
+
+    messageReceived(AckMessage ack) {
+        if (slotId == ack.get("slot"))
+            patchId = ack.get("pid1");   // <- the id the parts must quote
+    }
+
+which is why a bare `RequestPatch` answers `ack(type 0x36)` — "no data" — and
+nothing follows. That ACK *is* the answer.
+
+**Stage 2 — `GetPatchWorker`.** Constructed with `(synth, slotId, patchId)`, it
+calls `GetPatchMessage.forAllParts(slotId, patchId)` and sends the thirteen part
+requests, then waits for thirteen replies with a 5 s budget.
+
+The pid in those requests must be **the one from the RequestPatch ACK**, not the
+slot's continuously-updated patch id. Quoting the latter is what produced the
+`error` reply: the device had moved on to pid 53 while the transfer was stamped
+52.
+
+Each answered part arrives as its own packet run and is its own `Section` of the
+patch bitstream. Sections are byte-aligned (`Section % 8`), so each run is
+unpacked from 7-bit form separately and the results concatenate.

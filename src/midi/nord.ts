@@ -163,6 +163,10 @@ export interface PatchDumpReport {
   bitstream: Uint8Array;
   packets: number;
   payloadBytes: number;
+  /** Complete packet runs seen; one per answered part. */
+  runs: number;
+  /** The transfer id handed back by the RequestPatch ACK. */
+  patchId?: number;
   /** Whether a packet flagged as the start / end of a run was seen. */
   sawFirst: boolean;
   sawLast: boolean;
@@ -512,11 +516,16 @@ export class NordModular {
    * This resolves rather than rejects when nothing useful arrives: what *did*
    * arrive is the diagnostic, so the caller always gets a report.
    */
-  collectPatchPackets(windowMs: number): {
+  collectPatchPackets(windowMs: number, expectedRuns = 1): {
     done: Promise<PatchDumpReport>;
     stop: () => void;
   } {
-    const payloads: Uint8Array[] = [];
+    // A patch arrives as one run per requested part, so payloads are grouped by
+    // run and each run is unpacked on its own. Each run is a `Section` of the
+    // patch bitstream, and sections are byte-aligned (`Section % 8`), so the
+    // unpacked runs concatenate cleanly.
+    const runs: Uint8Array[][] = [];
+    let current: Uint8Array[] = [];
     const seen: string[] = [];
     let packets = 0;
     let sawFirst = false;
@@ -526,17 +535,32 @@ export class NordModular {
     const done = new Promise<PatchDumpReport>((resolve) => { settle = resolve; });
 
     const build = (): PatchDumpReport => {
-      const total = payloads.reduce((n, p) => n + p.length, 0);
-      const joined = new Uint8Array(total);
+      if (current.length) runs.push(current);
+
+      const sections = runs.map((run) => {
+        const size = run.reduce((n, p) => n + p.length, 0);
+        const joined = new Uint8Array(size);
+        let offset = 0;
+        for (const part of run) {
+          joined.set(part, offset);
+          offset += part.length;
+        }
+        return unpack7Bit(joined);
+      });
+
+      const total = sections.reduce((n, s) => n + s.length, 0);
+      const bitstream = new Uint8Array(total);
       let offset = 0;
-      for (const part of payloads) {
-        joined.set(part, offset);
-        offset += part.length;
+      for (const section of sections) {
+        bitstream.set(section, offset);
+        offset += section.length;
       }
+
       return {
-        bitstream: total ? unpack7Bit(joined) : new Uint8Array(0),
+        bitstream,
         packets,
         payloadBytes: total,
+        runs: runs.length,
         sawFirst,
         sawLast,
         otherMessages: seen,
@@ -581,14 +605,19 @@ export class NordModular {
       const isLast = ((cc >> 1) & 1) === 1;
 
       if (isFirst) {
-        payloads.length = 0;
+        if (current.length) runs.push(current);
+        current = [];
         sawFirst = true;
       }
       // Payload sits between the command/pid byte and the checksum.
-      payloads.push(raw.subarray(5, raw.length - 2));
+      current.push(raw.subarray(5, raw.length - 2));
+
       if (isLast) {
         sawLast = true;
-        finish();
+        runs.push(current);
+        current = [];
+        // Every requested part has answered; no need to wait out the window.
+        if (runs.length >= expectedRuns) finish();
       }
     });
 
@@ -615,23 +644,57 @@ export class NordModular {
    */
   async requestPatchParts(
     slot: number,
+    patchId: number,
     options: { gapMs?: number; onSent?: (part: string, index: number) => void } = {},
   ): Promise<number> {
-    const gap = options.gapMs ?? 120;
+    const gap = options.gapMs ?? 60;
     let sent = 0;
 
     for (const part of PATCH_PARTS) {
-      this.modifyPatch(
-        slot,
-        part.sc,
-        part.payload === undefined ? {} : { payload: part.payload },
-      );
+      // The pid must be the one the RequestPatch ACK handed back for this
+      // transfer, not the slot's continuously-updated id.
+      this.send(CC.PatchHandling, slot, {
+        data: {
+          data: {
+            pid: patchId,
+            sc: part.sc,
+            data: part.payload === undefined ? {} : { payload: part.payload },
+          },
+        },
+      });
       sent++;
       options.onSent?.(part.name, sent);
       await new Promise((r) => setTimeout(r, gap));
     }
 
     return sent;
+  }
+
+  /**
+   * Waits for an ACK addressed to `slot` and returns its `pid1`.
+   *
+   * This is the handshake half of a patch transfer: `RequestPatch` does not
+   * return patch data, it returns the id that the part requests must quote.
+   */
+  waitForAckPid(slot: number, timeoutMs = 2000): Promise<number> {
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        dispose();
+        reject(new Error(`timed out after ${timeoutMs}ms waiting for the request ACK`));
+      }, timeoutMs);
+
+      const dispose = this.addListener((message) => {
+        if (message.messageId !== 'ack') return;
+        if (message.root.values.get('slot') !== slot) return;
+        const data = message.root.items.get('data');
+        if (!data || Array.isArray(data)) return;
+        const pid1 = data.values.get('pid1');
+        if (pid1 === undefined) return;
+        clearTimeout(timer);
+        dispose();
+        resolve(pid1);
+      });
+    });
   }
 
   /**
@@ -644,11 +707,7 @@ export class NordModular {
     slot: number,
     bank: number,
     position: number,
-    { windowMs = 2500, usePartRequests = false }: {
-      windowMs?: number;
-      /** Allow the part-by-part fallback, which sends modification commands. */
-      usePartRequests?: boolean;
-    } = {},
+    { windowMs = 5000 }: { windowMs?: number } = {},
   ): Promise<PatchDumpReport> {
     this.loadPatch(slot, bank, position);
 
@@ -657,23 +716,35 @@ export class NordModular {
     // rather than guessing at a fixed delay.
     await this.waitForFreshPid(slot, 1200);
 
-    const whole = this.collectPatchPackets(windowMs);
+    // Stage 1: RequestPatch is a handshake, not a dump. It returns an ACK whose
+    // pid1 is the transfer's patch id — ReqPatchWorker takes exactly this and
+    // hands it to GetPatchWorker.
+    const ack = this.waitForAckPid(slot, 2000);
     this.requestPatch(slot);
-    const first = await whole.done;
-    if (first.payloadBytes > 0 || !usePartRequests) {
-      return { ...first, method: 'RequestPatch' };
+
+    let patchId: number;
+    try {
+      patchId = await ack;
+    } catch (error) {
+      return {
+        bitstream: new Uint8Array(0),
+        packets: 0, payloadBytes: 0, runs: 0,
+        sawFirst: false, sawLast: false,
+        otherMessages: [(error as Error).message],
+        method: 'RequestPatch (no ACK)',
+      };
     }
 
-    // Opt-in only: these are modification-family commands, so the caller has to
-    // ask for them explicitly. See requestPatchParts.
-    const parts = this.collectPatchPackets(windowMs + PATCH_PARTS.length * 150);
-    const sent = await this.requestPatchParts(slot);
-    parts.stop();
-    const second = await parts.done;
+    // Stage 2: ask for each part, quoting that id. GetPatchWorker waits for
+    // thirteen replies with a five-second budget.
+    const collecting = this.collectPatchPackets(windowMs, PATCH_PARTS.length);
+    const sent = await this.requestPatchParts(slot, patchId);
+    const report = await collecting.done;
+
     return {
-      ...second,
-      method: `GetPatchPart x${sent}`,
-      otherMessages: [...first.otherMessages, ...second.otherMessages],
+      ...report,
+      method: `RequestPatch -> pid ${patchId} -> ${sent} part requests`,
+      patchId,
     };
   }
 

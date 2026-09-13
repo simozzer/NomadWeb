@@ -24,7 +24,7 @@ const nord = new NordModular(transport as never, source);
 process.stdout.write('\nPatch part requests\n');
 {
   const started = Date.now();
-  const sent = await nord.requestPatchParts(0, { gapMs: 5 });
+  const sent = await nord.requestPatchParts(0, 42, { gapMs: 5 });
   const elapsed = Date.now() - started;
 
   check('thirteen parts sent', sent === 13, `${sent}`);

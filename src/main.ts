@@ -489,12 +489,10 @@ async function main(): Promise<void> {
     loadedPanel.hidden = false;
 
     try {
-      const report = await nord.loadAndFetchPatch(slot, entry.bank, entry.position, {
-        usePartRequests: $<HTMLInputElement>('use-parts').checked,
-      });
+      const report = await nord.loadAndFetchPatch(slot, entry.bank, entry.position);
       log(
         'info',
-        `patch fetch via ${report.method}: ${report.packets} packets, ` +
+        `patch fetch via ${report.method}: ${report.packets} packets in ${report.runs} run(s), ` +
           `${report.payloadBytes} payload bytes, first=${report.sawFirst} last=${report.sawLast}` +
           (report.otherMessages.length
             ? `, also saw: ${[...new Set(report.otherMessages)].join(', ')}`
@@ -547,8 +545,8 @@ async function main(): Promise<void> {
 
     const lines = [
       `Tried: ${report.method}.`,
-      `Patch packets seen: ${report.packets}.`,
-      `Active patch id for this slot: ${nord.getActivePid(Number(slotSelect.value))}.`,
+      `Patch packets seen: ${report.packets} in ${report.runs} run(s).`,
+      `Transfer patch id from the ACK: ${report.patchId ?? '(none)'}`,
       report.otherMessages.length
         ? `The device did reply with: ${[...new Set(report.otherMessages)].join(', ')}.`
         : 'Nothing at all arrived during the wait.',
