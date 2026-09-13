@@ -243,7 +243,13 @@ export class ModuleView {
 
       group.style.cursor = 'pointer';
       group.setAttribute('tabindex', '0');
-      group.addEventListener('click', () => {
+      // Buttons act on click, but the press still has to be kept from the
+      // canvas underneath, which would otherwise begin panning.
+      group.addEventListener('pointerdown', (event: PointerEvent) => {
+        event.stopPropagation();
+      });
+      group.addEventListener('click', (event: MouseEvent) => {
+        event.stopPropagation();
         const current = this.getValue(parameter.componentId);
         const next = current >= parameter.maxValue ? parameter.minValue : current + 1;
         this.commit(parameter, next);
@@ -348,6 +354,9 @@ export class ModuleView {
 
     group.addEventListener('pointerdown', (event: PointerEvent) => {
       event.preventDefault();
+      // The patch canvas pans on pointerdown; without this the gesture starts a
+      // pan as well as a control edit.
+      event.stopPropagation();
       group.setPointerCapture(event.pointerId);
       const startY = event.clientY;
       const startValue = this.getValue(parameter.componentId);

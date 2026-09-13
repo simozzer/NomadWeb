@@ -57,6 +57,22 @@ function el<K extends keyof SVGElementTagNameMap>(
   return node;
 }
 
+/** Widget groups that own their own pointer gestures. */
+const CONTROL_CLASSES = ['knob', 'button', 'slider', 'module-handle'];
+
+function isModuleControl(target: EventTarget | null): boolean {
+  let node = target as Element | null;
+  // `closest` is unreliable across the nested <svg> boundary of a module, so
+  // walk up explicitly and stop at the canvas.
+  while (node && !node.classList?.contains('patch-canvas')) {
+    for (const name of CONTROL_CLASSES) {
+      if (node.classList?.contains(name)) return true;
+    }
+    node = node.parentElement ?? (node.parentNode as Element | null);
+  }
+  return false;
+}
+
 interface Placed {
   module: PatchModule;
   def: ModuleDef;
@@ -371,6 +387,11 @@ export class PatchView {
     }, { passive: false });
 
     this.element.addEventListener('pointerdown', (event: PointerEvent) => {
+      // A press that landed on a module control belongs to that control. The
+      // controls stop propagation themselves, but this keeps a newly added
+      // widget from silently panning the canvas instead of being operated.
+      if (isModuleControl(event.target)) return;
+
       const point = this.toCanvas(event);
       const connector = this.connectorAt(point.x, point.y);
       if (connector) return this.beginCableDrag(event, connector);
