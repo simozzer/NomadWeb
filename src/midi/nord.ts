@@ -158,6 +158,38 @@ export function unpack7Bit(payload: Uint8Array): Uint8Array {
   return out;
 }
 
+export interface PatchDumpReport {
+  /** The reassembled patch bitstream; empty if no packets arrived. */
+  bitstream: Uint8Array;
+  packets: number;
+  payloadBytes: number;
+  /** Whether a packet flagged as the start / end of a run was seen. */
+  sawFirst: boolean;
+  sawLast: boolean;
+  /** Message ids that arrived instead, when the dump did not. */
+  otherMessages: string[];
+  /** Which request produced the result. */
+  method?: string;
+}
+
+/**
+ * The patch parts `GetPatchMessage` requests, one message each.
+ *
+ * Codes are the `GetPatchPart` and `GetPatchPartExtra` cases of
+ * `PatchModification` in midi.pdl2. `GetPatchPartExtra` takes a payload byte;
+ * the bytecode of `GetPatchMessage.getBitStream` pairs each Extra code with
+ * both 0 and 1, which is the patch area — hence a poly and a common variant of
+ * the module, cable, parameter and name dumps, matching the enum's names.
+ */
+const PATCH_PARTS: Array<{ sc: number; payload?: number }> = [
+  { sc: 0x20, payload: 0 },
+  { sc: 0x4b, payload: 0 }, { sc: 0x4b, payload: 1 },
+  { sc: 0x53, payload: 0 }, { sc: 0x53, payload: 1 },
+  { sc: 0x4c, payload: 0 }, { sc: 0x4c, payload: 1 },
+  { sc: 0x4e, payload: 0 }, { sc: 0x4e, payload: 1 },
+  { sc: 0x61 }, { sc: 0x63 }, { sc: 0x66 }, { sc: 0x68 },
+];
+
 export type MessageListener = (message: DecodeResult, raw: Uint8Array) => void;
 
 export interface NordLogEntry {
@@ -420,77 +452,143 @@ export class NordModular {
   }
 
   /**
-   * Collects a patch dump and returns its reassembled bitstream.
+   * Collects patch packets arriving over a window.
    *
-   * A dump arrives as a run of packets whose command code carries first/last
-   * flags in its low two bits (`0x1c`-`0x1f`). Their payloads concatenate, seven
-   * bits per byte, into the bitstream that `patch.pdl2` describes.
+   * A dump is a run of packets whose command code carries first/last flags in
+   * its low two bits (`0x1c`-`0x1f`); their payloads concatenate, seven bits per
+   * byte, into the bitstream `patch.pdl2` describes.
+   *
+   * This resolves rather than rejects when nothing useful arrives: what *did*
+   * arrive is the diagnostic, so the caller always gets a report.
    */
-  receivePatchDump(timeoutMs = 5000): Promise<Uint8Array> {
-    return new Promise((resolve, reject) => {
-      const payloads: Uint8Array[] = [];
-      let started = false;
+  collectPatchPackets(windowMs: number): {
+    done: Promise<PatchDumpReport>;
+    stop: () => void;
+  } {
+    const payloads: Uint8Array[] = [];
+    const seen: string[] = [];
+    let packets = 0;
+    let sawFirst = false;
+    let sawLast = false;
+    let settle: (report: PatchDumpReport) => void;
 
-      const finish = (error?: Error) => {
-        clearTimeout(timer);
-        dispose();
-        if (error) return reject(error);
-        const total = payloads.reduce((n, p) => n + p.length, 0);
-        const joined = new Uint8Array(total);
-        let offset = 0;
-        for (const part of payloads) {
-          joined.set(part, offset);
-          offset += part.length;
-        }
-        resolve(unpack7Bit(joined));
+    const done = new Promise<PatchDumpReport>((resolve) => { settle = resolve; });
+
+    const build = (): PatchDumpReport => {
+      const total = payloads.reduce((n, p) => n + p.length, 0);
+      const joined = new Uint8Array(total);
+      let offset = 0;
+      for (const part of payloads) {
+        joined.set(part, offset);
+        offset += part.length;
+      }
+      return {
+        bitstream: total ? unpack7Bit(joined) : new Uint8Array(0),
+        packets,
+        payloadBytes: total,
+        sawFirst,
+        sawLast,
+        otherMessages: seen,
       };
+    };
 
-      const timer = setTimeout(
-        () =>
-          finish(
-            new Error(
-              started
-                ? `patch dump stopped after ${payloads.length} packets without a final one`
-                : `timed out after ${timeoutMs}ms waiting for a patch dump`,
-            ),
-          ),
-        timeoutMs,
-      );
+    const finish = () => {
+      clearTimeout(timer);
+      dispose();
+      settle(build());
+    };
 
-      const dispose = this.transport.addListener((raw) => {
-        const cc = commandCodeOf(raw);
-        if (cc < CC.PatchPacketBase || cc > CC.PatchPacketBase + 3) return;
+    const timer = setTimeout(finish, windowMs);
 
-        const isFirst = (cc & 1) === 1;
-        const isLast = ((cc >> 1) & 1) === 1;
+    const dispose = this.transport.addListener((raw) => {
+      const cc = commandCodeOf(raw);
 
-        if (isFirst) {
-          payloads.length = 0;
-          started = true;
+      if (cc < CC.PatchPacketBase || cc > CC.PatchPacketBase + 3) {
+        // Record everything else so a failed fetch says what the device did send.
+        if (seen.length < 20) {
+          try {
+            seen.push(this.decoder.decode(raw).messageId ?? `cc 0x${cc.toString(16)}`);
+          } catch {
+            seen.push(`cc 0x${cc.toString(16)} (undecodable)`);
+          }
         }
-        if (!started) return; // Ignore a run we joined halfway through.
+        return;
+      }
 
-        // Payload sits between the command/pid byte and the checksum.
-        payloads.push(raw.subarray(5, raw.length - 2));
-        if (isLast) finish();
-      });
+      packets++;
+      const isFirst = (cc & 1) === 1;
+      const isLast = ((cc >> 1) & 1) === 1;
+
+      if (isFirst) {
+        payloads.length = 0;
+        sawFirst = true;
+      }
+      // Payload sits between the command/pid byte and the checksum.
+      payloads.push(raw.subarray(5, raw.length - 2));
+      if (isLast) {
+        sawLast = true;
+        finish();
+      }
     });
+
+    return { done, stop: finish };
   }
 
-  /** Loads a stored patch into a slot and returns its dumped bitstream. */
+  /**
+   * Asks for a patch part by part.
+   *
+   * `GetPatchMessage.forAllParts` in the original issues one request per entry
+   * of its `PatchPart` enum — HEADER, POLY_MODULE, COMMON_MODULE, POLY_CABLE,
+   * and so on — rather than a single whole-patch request. The sub-command codes
+   * are the `GetPatchPart` / `GetPatchPartExtra` cases of `PatchModification`;
+   * the `Extra` form carries a payload byte selecting the patch area.
+   */
+  requestPatchParts(slot: number): number {
+    let sent = 0;
+    for (const part of PATCH_PARTS) {
+      try {
+        this.modifyPatch(
+          slot,
+          part.sc,
+          part.payload === undefined ? {} : { payload: part.payload },
+        );
+        sent++;
+      } catch {
+        // A part this grammar cannot build is skipped; the rest still go.
+      }
+    }
+    return sent;
+  }
+
+  /**
+   * Loads a stored patch and reads it back.
+   *
+   * Tries the single whole-patch request first, then the part-by-part path the
+   * original uses, since only hardware can settle which this device answers.
+   */
   async loadAndFetchPatch(
     slot: number,
     bank: number,
     position: number,
-    timeoutMs = 5000,
-  ): Promise<Uint8Array> {
+    windowMs = 2500,
+  ): Promise<PatchDumpReport> {
     this.loadPatch(slot, bank, position);
-    // Give the device a moment to make the patch current before asking for it.
-    await new Promise((r) => setTimeout(r, 150));
-    const dump = this.receivePatchDump(timeoutMs);
-    dump.catch(() => {});
+    // Let the device make the patch current before asking for it.
+    await new Promise((r) => setTimeout(r, 200));
+
+    const whole = this.collectPatchPackets(windowMs);
     this.requestPatch(slot);
-    return dump;
+    const first = await whole.done;
+    if (first.payloadBytes > 0) return { ...first, method: 'RequestPatch' };
+
+    const parts = this.collectPatchPackets(windowMs);
+    const sent = this.requestPatchParts(slot);
+    const second = await parts.done;
+    return {
+      ...second,
+      method: `GetPatchPart x${sent}`,
+      otherMessages: [...first.otherMessages, ...second.otherMessages],
+    };
   }
 
   /**

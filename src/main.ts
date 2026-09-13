@@ -5,7 +5,13 @@ import { PatchReader, type Patch, type PatchArea } from './model/patch.ts';
 import { ModuleView } from './ui/moduleView.ts';
 import { PatchView } from './ui/patchView.ts';
 import { WebMidiTransport, MidiUnavailableError } from './midi/webmidi.ts';
-import { NordModular, CC, MAX_BANKS, type PatchListEntry } from './midi/nord.ts';
+import {
+  NordModular,
+  CC,
+  MAX_BANKS,
+  type PatchListEntry,
+  type PatchDumpReport,
+} from './midi/nord.ts';
 import { formatSysex } from './midi/framing.ts';
 
 const $ = <T extends HTMLElement>(id: string): T => {
@@ -479,11 +485,28 @@ async function main(): Promise<void> {
     const slotName = slotSelect.selectedOptions[0]?.textContent ?? `slot ${slot}`;
     patchHint.textContent = `Loading "${entry.name}" into ${slotName}…`;
 
-    try {
-      const bitstream = await nord.loadAndFetchPatch(slot, entry.bank, entry.position);
-      log('info', `patch dump: ${bitstream.length} bytes of bitstream`);
+    // The panel is shown up front so a failure is visible rather than silent.
+    loadedPanel.hidden = false;
 
-      const patch = patchReader.read(bitstream);
+    try {
+      const report = await nord.loadAndFetchPatch(slot, entry.bank, entry.position);
+      log(
+        'info',
+        `patch fetch via ${report.method}: ${report.packets} packets, ` +
+          `${report.payloadBytes} payload bytes, first=${report.sawFirst} last=${report.sawLast}` +
+          (report.otherMessages.length
+            ? `, also saw: ${[...new Set(report.otherMessages)].join(', ')}`
+            : ''),
+      );
+
+      if (report.payloadBytes === 0) {
+        showFetchDiagnostic(report, slotName);
+        patchHint.textContent =
+          `Loaded "${entry.name}" into ${slotName}, but the device sent no patch data.`;
+        return;
+      }
+
+      const patch = patchReader.read(report.bitstream);
       currentPatch = patch;
       // Land on whichever area actually has modules.
       if (!patch.modules.some((m) => m.area === currentArea)) {
@@ -497,12 +520,51 @@ async function main(): Promise<void> {
         `Loaded "${patch.name || entry.name}" into ${slotName} — ` +
         `${patch.modules.length} modules, ${patch.cables.length} cables.`;
     } catch (error) {
-      patchHint.textContent =
-        `Loaded into ${slotName}, but reading it back failed: ${(error as Error).message}`;
+      canvasHost.replaceChildren();
+      loadedHint.textContent =
+        `The patch loaded on the device, but this could not read it back: ` +
+        `${(error as Error).message}`;
+      patchHint.textContent = `Loaded into ${slotName}; reading it back failed.`;
       log('err', (error as Error).message);
     } finally {
       loading = false;
     }
+  }
+
+  /** Explains an empty patch fetch using what actually came back. */
+  function showFetchDiagnostic(report: PatchDumpReport, slotName: string): void {
+    canvasHost.replaceChildren();
+    currentPatch = null;
+
+    const box = document.createElement('div');
+    box.className = 'diagnostic';
+
+    const heading = document.createElement('strong');
+    heading.textContent = `No patch data came back from ${slotName}.`;
+    box.appendChild(heading);
+
+    const lines = [
+      `Tried: ${report.method}.`,
+      `Patch packets seen: ${report.packets}.`,
+      report.otherMessages.length
+        ? `The device did reply with: ${[...new Set(report.otherMessages)].join(', ')}.`
+        : 'Nothing at all arrived during the wait.',
+      report.packets > 0 && !report.sawLast
+        ? 'Packets arrived but none was flagged as the last of the run, so the ' +
+          'first/last flags may not be where the grammar says.'
+        : '',
+      'The MIDI monitor below has the raw bytes.',
+    ].filter(Boolean);
+
+    for (const text of lines) {
+      const p = document.createElement('p');
+      p.textContent = text;
+      box.appendChild(p);
+    }
+
+    canvasHost.appendChild(box);
+    $('loaded-summary').textContent = '';
+    loadedHint.textContent = '';
   }
 
   cancelButton.addEventListener('click', () => {
