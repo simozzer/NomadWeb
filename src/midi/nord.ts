@@ -172,23 +172,6 @@ export interface PatchDumpReport {
   method?: string;
 }
 
-/**
- * The patch parts `GetPatchMessage` requests, one message each.
- *
- * Codes are the `GetPatchPart` and `GetPatchPartExtra` cases of
- * `PatchModification` in midi.pdl2. `GetPatchPartExtra` takes a payload byte;
- * the bytecode of `GetPatchMessage.getBitStream` pairs each Extra code with
- * both 0 and 1, which is the patch area — hence a poly and a common variant of
- * the module, cable, parameter and name dumps, matching the enum's names.
- */
-const PATCH_PARTS: Array<{ sc: number; payload?: number }> = [
-  { sc: 0x20, payload: 0 },
-  { sc: 0x4b, payload: 0 }, { sc: 0x4b, payload: 1 },
-  { sc: 0x53, payload: 0 }, { sc: 0x53, payload: 1 },
-  { sc: 0x4c, payload: 0 }, { sc: 0x4c, payload: 1 },
-  { sc: 0x4e, payload: 0 }, { sc: 0x4e, payload: 1 },
-  { sc: 0x61 }, { sc: 0x63 }, { sc: 0x66 }, { sc: 0x68 },
-];
 
 export type MessageListener = (message: DecodeResult, raw: Uint8Array) => void;
 
@@ -586,29 +569,28 @@ export class NordModular {
   }
 
   /**
-   * Asks for a patch part by part.
+   * DISABLED — do not re-enable without confirmed sub-command codes.
    *
-   * `GetPatchMessage.forAllParts` in the original issues one request per entry
-   * of its `PatchPart` enum — HEADER, POLY_MODULE, COMMON_MODULE, POLY_CABLE,
-   * and so on — rather than a single whole-patch request. The sub-command codes
-   * are the `GetPatchPart` / `GetPatchPartExtra` cases of `PatchModification`;
-   * the `Extra` form carries a payload byte selecting the patch area.
+   * The idea was that `GetPatchMessage.forAllParts` requests a patch one part at
+   * a time, so this sent the `GetPatchPart` / `GetPatchPartExtra` codes from the
+   * `PatchModification` switch table.
+   *
+   * Against real hardware that silenced the synth about a second after a load:
+   * the device answered with an `error`, and the slot's pid advanced by one,
+   * which means the patch was *modified*, not read. These codes share a switch
+   * with genuinely destructive commands — `ModuleDeletion` (0x32),
+   * `CableDelete` (0x51), `SetPatchTitle` (0x27) — so sending a code whose
+   * layout is wrong can damage the loaded patch.
+   *
+   * The codes were read off a naive linear opcode scan of `getBitStream`, which
+   * cannot tell an instruction from an operand and so is not evidence. Sending
+   * speculative modification commands to hardware was the wrong move regardless.
    */
-  requestPatchParts(slot: number): number {
-    let sent = 0;
-    for (const part of PATCH_PARTS) {
-      try {
-        this.modifyPatch(
-          slot,
-          part.sc,
-          part.payload === undefined ? {} : { payload: part.payload },
-        );
-        sent++;
-      } catch {
-        // A part this grammar cannot build is skipped; the rest still go.
-      }
-    }
-    return sent;
+  requestPatchParts(_slot: number): number {
+    throw new Error(
+      'part-by-part patch fetch is disabled: the sub-command codes are unverified ' +
+        'and modified the patch on the device',
+    );
   }
 
   /**
@@ -630,19 +612,11 @@ export class NordModular {
     // rather than guessing at a fixed delay.
     await this.waitForFreshPid(slot, 1200);
 
+    // Only the read-only whole-patch request is sent. The part-by-part path is
+    // disabled — see requestPatchParts.
     const whole = this.collectPatchPackets(windowMs);
     this.requestPatch(slot);
-    const first = await whole.done;
-    if (first.payloadBytes > 0) return { ...first, method: 'RequestPatch' };
-
-    const parts = this.collectPatchPackets(windowMs);
-    const sent = this.requestPatchParts(slot);
-    const second = await parts.done;
-    return {
-      ...second,
-      method: `GetPatchPart x${sent}`,
-      otherMessages: [...first.otherMessages, ...second.otherMessages],
-    };
+    return { ...(await whole.done), method: 'RequestPatch' };
   }
 
   /**
