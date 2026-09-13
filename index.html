@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Nomad Web — Nord Modular editor</title>
+    <link rel="stylesheet" href="/src/ui/styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <h1>Nomad Web</h1>
+      <span class="subtitle">Nord Modular editor · Web MIDI</span>
+      <div class="spacer"></div>
+      <span id="device-status" class="status status--idle">not connected</span>
+    </header>
+
+    <main>
+      <section class="panel" id="connection">
+        <h2>Device</h2>
+        <p class="hint" id="connection-hint">
+          Web MIDI needs permission and a secure context (HTTPS or localhost).
+        </p>
+        <div class="row">
+          <button id="request-access" type="button">Request MIDI access</button>
+        </div>
+        <div class="row" id="port-pickers" hidden>
+          <label>In <select id="input-port"></select></label>
+          <label>Out <select id="output-port"></select></label>
+          <button id="connect" type="button">Connect &amp; identify</button>
+        </div>
+        <dl class="identity" id="identity" hidden></dl>
+      </section>
+
+      <section class="panel" id="browser">
+        <h2>Modules <span class="count" id="module-count"></span></h2>
+        <div class="row">
+          <label>Category
+            <select id="category"></select>
+          </label>
+          <label class="grow">Search
+            <input id="search" type="search" placeholder="name, e.g. ADSR" />
+          </label>
+        </div>
+        <div id="module-grid" class="module-grid"></div>
+      </section>
+
+      <section class="panel" id="monitor">
+        <h2>MIDI monitor</h2>
+        <p class="hint">
+          Outgoing messages are built from <code>midi.pdl2</code>. Until a patch is
+          loaded, edits are encoded and shown here rather than sent.
+        </p>
+        <pre id="log" class="log"></pre>
+      </section>
+    </main>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

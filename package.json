@@ -1,0 +1,22 @@
+{
+  "name": "nomad-web",
+  "version": "0.1.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "node scripts/parse-check.ts && node scripts/decode-check.ts && node scripts/encode-check.ts && node scripts/model-check.ts",
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "check": "tsc --noEmit"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "linkedom": "^0.18.13",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.0"
+  }
+}

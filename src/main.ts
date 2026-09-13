@@ -1,0 +1,228 @@
+import { parseModuleCatalogue, type ModuleDef, type ParameterDef } from './model/modules.ts';
+import { parseTheme, type Theme } from './model/theme.ts';
+import { FormatterTable } from './model/formatters.ts';
+import { ModuleView } from './ui/moduleView.ts';
+import { WebMidiTransport, MidiUnavailableError } from './midi/webmidi.ts';
+import { NordModular, CC } from './midi/nord.ts';
+import { formatSysex } from './midi/framing.ts';
+
+const $ = <T extends HTMLElement>(id: string): T => {
+  const el = document.getElementById(id);
+  if (!el) throw new Error(`missing element #${id}`);
+  return el as T;
+};
+
+const logEl = $<HTMLPreElement>('log');
+
+function log(kind: 'in' | 'out' | 'err' | 'info', text: string): void {
+  const line = document.createElement('span');
+  line.className = kind;
+  const time = new Date().toLocaleTimeString();
+  line.textContent = `${time}  ${kind.toUpperCase().padEnd(4)} ${text}\n`;
+  logEl.appendChild(line);
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+function setStatus(text: string, kind: 'idle' | 'ok' | 'bad'): void {
+  const el = $('device-status');
+  el.textContent = text;
+  el.className = `status status--${kind}`;
+}
+
+async function fetchText(url: string): Promise<string> {
+  const response = await fetch(url);
+  if (!response.ok) throw new Error(`${url} -> ${response.status}`);
+  return response.text();
+}
+
+async function main(): Promise<void> {
+  // ---- data ----
+  const [modulesXml, themeXml, nmformatSrc, midiGrammar] = await Promise.all([
+    fetchText('/data/modules.xml'),
+    fetchText('/data/classic-theme.xml'),
+    fetchText('/data/nmformat.js'),
+    fetchText('/data/midi.pdl2'),
+  ]);
+
+  const catalogue = parseModuleCatalogue(modulesXml);
+  const theme: Theme = parseTheme(themeXml);
+  const formatters = new FormatterTable(nmformatSrc);
+
+  log('info', `${catalogue.modules.size} modules, ${theme.modules.size} themed layouts`);
+
+  // ---- MIDI ----
+  const transport = new WebMidiTransport();
+  const nord = new NordModular(transport, midiGrammar);
+  let connected = false;
+
+  nord.addListener((message) => {
+    // Meters and lights stream continuously; keep them out of the log.
+    if (message.messageId === 'meters' || message.messageId === 'lights') return;
+    log('in', `${message.messageId ?? 'unknown'}`);
+  });
+
+  const portPickers = $('port-pickers');
+  const inputSelect = $<HTMLSelectElement>('input-port');
+  const outputSelect = $<HTMLSelectElement>('output-port');
+
+  function refreshPorts(): void {
+    const fill = (select: HTMLSelectElement, ports: { id: string; name: string }[]) => {
+      const previous = select.value;
+      select.replaceChildren();
+      for (const port of ports) {
+        const option = document.createElement('option');
+        option.value = port.id;
+        option.textContent = port.name;
+        select.appendChild(option);
+      }
+      if (previous) select.value = previous;
+    };
+    fill(inputSelect, transport.listInputs());
+    fill(outputSelect, transport.listOutputs());
+
+    const suggestion = transport.suggestPorts();
+    if (suggestion.inputId) inputSelect.value = suggestion.inputId;
+    if (suggestion.outputId) outputSelect.value = suggestion.outputId;
+  }
+
+  transport.onPortsChanged = () => {
+    refreshPorts();
+    log('info', 'MIDI ports changed');
+  };
+
+  $('request-access').addEventListener('click', async () => {
+    try {
+      await transport.requestAccess();
+      portPickers.hidden = false;
+      refreshPorts();
+      $('connection-hint').textContent =
+        'Access granted. Choose the Nord’s ports and connect.';
+      log('info', 'MIDI access granted with SysEx');
+    } catch (error) {
+      const message = error instanceof MidiUnavailableError
+        ? error.message
+        : (error as Error).message;
+      $('connection-hint').textContent = message;
+      setStatus('no MIDI access', 'bad');
+      log('err', message);
+    }
+  });
+
+  $('connect').addEventListener('click', async () => {
+    try {
+      await transport.open(inputSelect.value, outputSelect.value);
+      nord.start();
+      log('info', `opened ${inputSelect.selectedOptions[0]?.textContent} / ${outputSelect.selectedOptions[0]?.textContent}`);
+
+      setStatus('identifying…', 'idle');
+      const identity = await nord.identify();
+      connected = true;
+
+      const dl = $('identity');
+      dl.hidden = false;
+      dl.replaceChildren();
+      for (const [term, value] of [
+        ['Model', identity.deviceName],
+        ['OS version', identity.version],
+        ['Serial (last 4)', String(identity.serial)],
+      ]) {
+        const dt = document.createElement('dt');
+        dt.textContent = term;
+        const dd = document.createElement('dd');
+        dd.textContent = value;
+        dl.append(dt, dd);
+      }
+
+      setStatus(identity.deviceName, 'ok');
+      log('info', `identified ${identity.deviceName}, OS ${identity.version}`);
+    } catch (error) {
+      connected = false;
+      setStatus('not connected', 'bad');
+      log('err', (error as Error).message);
+    }
+  });
+
+  // ---- module browser ----
+  const grid = $('module-grid');
+  const categorySelect = $<HTMLSelectElement>('category');
+  const searchInput = $<HTMLInputElement>('search');
+
+  categorySelect.replaceChildren();
+  for (const category of ['All', ...catalogue.categories]) {
+    const option = document.createElement('option');
+    option.value = category;
+    option.textContent = category;
+    categorySelect.appendChild(option);
+  }
+
+  function onParameterChange(def: ModuleDef, parameter: ParameterDef, value: number): void {
+    // Without a loaded patch there is no module instance index to address, so
+    // the message is built and shown rather than sent. Wiring this to the
+    // device is what loading a patch unlocks.
+    const message = nord.build(CC.Parameter, 0, {
+      data: {
+        pid: 0,
+        sc: 0x40,
+        data: { section: 0, module: def.index, parameter: parameter.index, value },
+      },
+    });
+    const shown = formatters.format(parameter.formatter, value);
+    log(
+      'out',
+      `${def.name}.${parameter.name} = ${value}${shown !== String(value) ? ` (${shown})` : ''}` +
+        `  ${formatSysex(message)}${connected ? '' : '  [preview]'}`,
+    );
+  }
+
+  function render(): void {
+    const category = categorySelect.value;
+    const query = searchInput.value.trim().toLowerCase();
+
+    const matches = Array.from(catalogue.modules.values())
+      .filter((def) => category === 'All' || def.category === category)
+      .filter((def) => !query || def.name.toLowerCase().includes(query))
+      .sort((a, b) => a.name.localeCompare(b.name));
+
+    grid.replaceChildren();
+    let missingTheme = 0;
+
+    for (const def of matches) {
+      const moduleTheme = theme.modules.get(def.componentId);
+      if (!moduleTheme) { missingTheme++; continue; }
+
+      const card = document.createElement('div');
+      card.className = 'module-card';
+
+      const header = document.createElement('header');
+      const name = document.createElement('span');
+      name.textContent = def.name;
+      const meta = document.createElement('span');
+      meta.textContent = `#${def.index} · ${def.category}`;
+      header.append(name, meta);
+      card.appendChild(header);
+
+      const view = new ModuleView({
+        def,
+        theme: moduleTheme,
+        imageBase: '/data/theme-images',
+        format: (parameter, value) => formatters.format(parameter.formatter, value),
+        onParameterChange: (parameter, value) => onParameterChange(def, parameter, value),
+      });
+      card.appendChild(view.element);
+      grid.appendChild(card);
+    }
+
+    $('module-count').textContent =
+      `${matches.length - missingTheme} shown` +
+      (missingTheme ? ` · ${missingTheme} without a themed layout` : '');
+  }
+
+  categorySelect.addEventListener('change', render);
+  searchInput.addEventListener('input', render);
+  render();
+}
+
+main().catch((error) => {
+  log('err', `startup failed: ${(error as Error).message}`);
+  setStatus('startup failed', 'bad');
+});
