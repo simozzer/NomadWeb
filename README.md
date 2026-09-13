@@ -63,17 +63,11 @@ truth — including the checksum rule, which the grammar expresses declaratively
 - Module catalogue and panel layouts: 1066 bindings, 382 connectors, none dangling
 - All 45 value formatters compile and evaluate
 
-103 checks pass (Unknown command: "test"
-
-
-Did you mean this?
-  npm test # Test a package
-To see a list of supported npm commands, run:
-  npm help).
+103 checks pass (`npm test`).
 
 **Not yet done**
 
-- Adding modules to a patch ( goes via a patch packet, cc 0x1f)
+- Adding modules to a patch (`NewModuleMessage` goes via a patch packet, cc 0x1f)
 - Storing a patch back to a bank, and .pch file import/export
 - Undo
 - Morph assignments, knob and MIDI-controller mappings
