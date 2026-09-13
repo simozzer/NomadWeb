@@ -168,3 +168,44 @@ Each dump carries a 1-bit `section` field selecting the patch area — the polyp
 area or the common/FX area. Parameter values are positional: `patch.pdl2` gives each module
 type its own `ParamN` rule (`Param20 := attackShape:2 attack:7 decay:7 sustain:7 release:7
 invert:1`), in the same order `modules.xml` declares that module's controls.
+
+## The patch id (pid)
+
+Nearly every message carries a `pid`, and sending zero gets the request
+acknowledged and then ignored — an ACK with no dump following.
+
+The Nord stamps a patch id on the patch occupying each slot. `ActivePidListener`
+in `jnmprotocol2` keeps **one pid per slot** (a four-element array) and updates it
+from incoming messages: ACKs carry it as `pid1`, and light messages carry it as
+`pid`. There is nothing to ask for — the device broadcasts meters and lights
+continuously, so listening is enough.
+
+Loading a patch stamps a new id, so a request issued immediately after a load can
+quote a stale one. `waitForFreshPid` waits for the device to announce the new id
+rather than guessing at a fixed delay.
+
+Where the pid sits:
+
+| Family | Path |
+|---|---|
+| ACK | `data:pid1` |
+| NMInfo (lights, meters, …) | `data:pid` |
+| Parameter | `data:pid` |
+| PatchModification | `data:data:pid` |
+
+`PatchCommand` messages (`RequestPatch`, `GetPatchList`, `LoadPatch`) have no pid
+field at all — they are addressed by the slot in the command byte.
+
+### Fetching a patch
+
+`GetPatchMessage$PatchPart` is an enum of thirteen parts — HEADER, POLY_MODULE,
+COMMON_MODULE, POLY_CABLE, COMMON_CABLE, POLY_PARAMETER, COMMON_PARAMETER,
+MORPHMAP, KNOBMAP, CONTROLMAP, POLY_NAMEDUMP, COMMON_NAMEDUMP, NOTE — and
+`forAllParts` issues one request each. So the original does **not** pull a patch
+with a single whole-patch request.
+
+The sub-commands are the `GetPatchPart` cases (`0x61`, `0x63`, `0x66`, `0x68`) and
+`GetPatchPartExtra` cases (`0x20`, `0x4b`, `0x4c`, `0x4e`, `0x53`) of
+`PatchModification` — which means they carry a pid, and the poly/common split is
+the `Extra` payload byte, paired with both 0 and 1 in
+`GetPatchMessage.getBitStream`.

@@ -220,6 +220,21 @@ export class NordModular {
   identity: DeviceIdentity | null = null;
 
   /**
+   * The device's current patch id for each of the four slots.
+   *
+   * The Nord stamps a pid on the patch in a slot and expects requests about
+   * that patch to quote it; a stale pid gets acknowledged and ignored. The
+   * original tracks this in `ActivePidListener`, which keeps one pid per slot
+   * and updates it from incoming ACK (`pid1`) and light messages. The device
+   * broadcasts it constantly, so listening is enough — there is nothing to ask.
+   */
+  private readonly activePids = [0, 0, 0, 0];
+
+  getActivePid(slot: number): number {
+    return this.activePids[slot] ?? 0;
+  }
+
+  /**
    * Called for a framed message the grammar could not decode.
    *
    * Worth surfacing rather than swallowing: against real hardware these are how
@@ -283,8 +298,34 @@ export class NordModular {
     });
 
     if (result.messageId === 'iam') this.captureIdentity(result.root);
+    this.capturePid(result.root);
     for (const listener of this.listeners) listener(result, raw);
   }
+
+  /**
+   * Learns the active pid for a slot from whatever the device just sent.
+   *
+   * ACKs carry it as `pid1`; the NMInfo, Parameter and PatchHandling families
+   * carry it as `pid`. Both sit directly under the top-level `data` item.
+   */
+  private capturePid(root: Decoded): void {
+    const slot = root.values.get('slot');
+    if (slot === undefined || slot < 0 || slot > 3) return;
+
+    const data = root.items.get('data');
+    if (!data || Array.isArray(data)) return;
+
+    const pid = data.values.get('pid1') ?? data.values.get('pid');
+    if (pid === undefined) return;
+
+    if (this.activePids[slot] !== pid) {
+      this.activePids[slot] = pid;
+      this.onActivePidChanged?.(slot, pid);
+    }
+  }
+
+  /** Fired when a slot's patch id changes, for the UI to report. */
+  onActivePidChanged: ((slot: number, pid: number) => void) | null = null;
 
   private captureIdentity(root: Decoded): void {
     const data = root.items.get('data');
@@ -507,7 +548,17 @@ export class NordModular {
         // Record everything else so a failed fetch says what the device did send.
         if (seen.length < 20) {
           try {
-            seen.push(this.decoder.decode(raw).messageId ?? `cc 0x${cc.toString(16)}`);
+            const decoded = this.decoder.decode(raw);
+            let label = decoded.messageId ?? `cc 0x${cc.toString(16)}`;
+            // An ACK's type says what the device made of the request, which is
+            // the whole story when a dump does not follow.
+            const data = decoded.root.items.get('data');
+            if (label === 'ack' && data && !Array.isArray(data)) {
+              const type = data.values.get('type');
+              const pid1 = data.values.get('pid1');
+              label = `ack(type 0x${(type ?? 0).toString(16)}, pid ${pid1})`;
+            }
+            seen.push(label);
           } catch {
             seen.push(`cc 0x${cc.toString(16)} (undecodable)`);
           }
@@ -573,8 +624,11 @@ export class NordModular {
     windowMs = 2500,
   ): Promise<PatchDumpReport> {
     this.loadPatch(slot, bank, position);
-    // Let the device make the patch current before asking for it.
-    await new Promise((r) => setTimeout(r, 200));
+
+    // Loading stamps a new patch id on the slot. Requests that quote a stale
+    // pid are acknowledged and ignored, so wait for the device to announce it
+    // rather than guessing at a fixed delay.
+    await this.waitForFreshPid(slot, 1200);
 
     const whole = this.collectPatchPackets(windowMs);
     this.requestPatch(slot);
@@ -600,7 +654,7 @@ export class NordModular {
    */
   private modifyPatch(slot: number, sc: number, payload: MessageInit): Uint8Array {
     return this.send(CC.PatchHandling, slot, {
-      data: { data: { pid: 0, sc, data: payload } },
+      data: { data: { pid: this.getActivePid(slot), sc, data: payload } },
     });
   }
 
@@ -664,10 +718,36 @@ export class NordModular {
   ): Uint8Array {
     return this.send(CC.Parameter, slot, {
       data: {
-        pid: 0,
+        pid: this.getActivePid(slot),
         sc: 0x40,
         data: { section: area, module: moduleIndex, parameter: parameterIndex, value },
       },
+    });
+  }
+
+  /**
+   * Waits for the device to report a patch id for `slot`.
+   *
+   * Resolves as soon as one arrives, or after `timeoutMs` with whatever is
+   * current — the device streams meters and lights continuously, so a pid
+   * normally appears within a few milliseconds.
+   */
+  waitForFreshPid(slot: number, timeoutMs = 1200): Promise<number> {
+    return new Promise((resolve) => {
+      const before = this.activePids[slot];
+
+      const settle = () => {
+        clearTimeout(timer);
+        this.onActivePidChanged = previous;
+        resolve(this.activePids[slot]);
+      };
+
+      const timer = setTimeout(settle, timeoutMs);
+      const previous = this.onActivePidChanged;
+      this.onActivePidChanged = (changed, pid) => {
+        previous?.(changed, pid);
+        if (changed === slot && pid !== before) settle();
+      };
     });
   }
 

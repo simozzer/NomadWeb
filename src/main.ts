@@ -546,6 +546,7 @@ async function main(): Promise<void> {
     const lines = [
       `Tried: ${report.method}.`,
       `Patch packets seen: ${report.packets}.`,
+      `Active patch id for this slot: ${nord.getActivePid(Number(slotSelect.value))}.`,
       report.otherMessages.length
         ? `The device did reply with: ${[...new Set(report.otherMessages)].join(', ')}.`
         : 'Nothing at all arrived during the wait.',
