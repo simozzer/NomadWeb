@@ -38,7 +38,7 @@ process.stdout.write('\nControl gestures are kept off the canvas\n');
 
   // Every widget group that owns a pointer gesture must be tagged with a class
   // the canvas recognises, or the canvas will pan instead.
-  const CONTROL_CLASSES = ['knob', 'button', 'slider', 'module-handle'];
+  const CONTROL_CLASSES = ['knob', 'button', 'slider'];
   const groups = Array.from(view.element.querySelectorAll('g'));
   const interactive = groups.filter((g) =>
     ['knob', 'button', 'slider'].some((c) => g.getAttribute('class') === c),

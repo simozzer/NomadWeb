@@ -58,19 +58,22 @@ function el<K extends keyof SVGElementTagNameMap>(
 }
 
 /** Widget groups that own their own pointer gestures. */
-const CONTROL_CLASSES = ['knob', 'button', 'slider', 'module-handle'];
+const CONTROL_CLASSES = ['knob', 'button', 'slider'];
 
-function isModuleControl(target: EventTarget | null): boolean {
+/** Walks up from an event target to the canvas, looking for a class. */
+function ancestorWithClass(target: EventTarget | null, className: string): Element | null {
   let node = target as Element | null;
   // `closest` is unreliable across the nested <svg> boundary of a module, so
   // walk up explicitly and stop at the canvas.
   while (node && !node.classList?.contains('patch-canvas')) {
-    for (const name of CONTROL_CLASSES) {
-      if (node.classList?.contains(name)) return true;
-    }
+    if (node.classList?.contains(className)) return node;
     node = node.parentElement ?? (node.parentNode as Element | null);
   }
-  return false;
+  return null;
+}
+
+function isModuleControl(target: EventTarget | null): boolean {
+  return CONTROL_CLASSES.some((name) => ancestorWithClass(target, name) !== null);
 }
 
 interface Placed {
@@ -84,8 +87,8 @@ interface Placed {
 /**
  * The patch canvas for one area: modules on the grid, cables between them.
  *
- * Modules drag by their title strip and snap to the grid. Cables are drawn by
- * dragging from one connector to another, and removed by clicking them.
+ * A press is routed by what it lands on: a control operates itself, a connector
+ * starts a cable, a module body drags that module, and bare canvas pans.
  */
 export class PatchView {
   readonly element: SVGSVGElement;
@@ -213,21 +216,12 @@ export class PatchView {
       nested.setAttribute('x', '0');
       nested.setAttribute('y', '0');
       group.appendChild(nested);
-
-      // A strip across the title area is the drag handle, so that dragging the
-      // module never fights with dragging a knob.
-      const handle = el('rect', {
-        x: 0, y: 0, width: layout.width, height: 14,
-        fill: 'transparent', class: 'module-handle',
-      });
-      handle.style.cursor = 'move';
-      group.appendChild(handle);
+      group.style.cursor = 'move';
 
       const placed: Placed = { module, def, group, view, heightPx: layout.height };
       this.placed.set(module.index, placed);
 
       this.positionModule(placed);
-      this.attachModuleDrag(placed, handle);
       this.moduleLayer.appendChild(group);
 
       // Apply the patch's stored values, positionally per modules.xml order.
@@ -246,41 +240,53 @@ export class PatchView {
     );
   }
 
-  private attachModuleDrag(placed: Placed, handle: SVGElement): void {
-    handle.addEventListener('pointerdown', (event: PointerEvent) => {
-      event.stopPropagation();
-      event.preventDefault();
-      handle.setPointerCapture(event.pointerId);
+  /** The module whose panel covers a canvas point, if any. */
+  private moduleAt(x: number, y: number): Placed | null {
+    // Later modules sit above earlier ones, so search in reverse.
+    const all = Array.from(this.placed.values()).reverse();
+    for (const placed of all) {
+      const left = placed.module.x * COLUMN_WIDTH;
+      const top = placed.module.y * ROW_HEIGHT;
+      if (x >= left && x <= left + COLUMN_WIDTH && y >= top && y <= top + placed.heightPx) {
+        return placed;
+      }
+    }
+    return null;
+  }
 
-      this.select(placed.module);
-      const start = this.toCanvas(event);
-      const originX = placed.module.x;
-      const originY = placed.module.y;
+  /** Drags a module anywhere on its body, snapped to the patch grid. */
+  private beginModuleDrag(event: PointerEvent, placed: Placed): void {
+    event.preventDefault();
+    this.element.setPointerCapture(event.pointerId);
 
-      const move = (moveEvent: PointerEvent) => {
-        const now = this.toCanvas(moveEvent);
-        // Snap to the grid the device itself stores positions on.
-        const x = Math.max(0, originX + Math.round((now.x - start.x) / COLUMN_WIDTH));
-        const y = Math.max(0, originY + Math.round((now.y - start.y) / ROW_HEIGHT));
-        if (x === placed.module.x && y === placed.module.y) return;
-        placed.module.x = x;
-        placed.module.y = y;
-        this.positionModule(placed);
-        this.renderCables();
-      };
+    this.select(placed.module);
+    const start = this.toCanvas(event);
+    const originX = placed.module.x;
+    const originY = placed.module.y;
 
-      const up = () => {
-        handle.releasePointerCapture(event.pointerId);
-        handle.removeEventListener('pointermove', move);
-        handle.removeEventListener('pointerup', up);
-        if (placed.module.x !== originX || placed.module.y !== originY) {
-          this.options.onModuleMove?.(placed.module, placed.module.x, placed.module.y);
-        }
-      };
+    const move = (moveEvent: PointerEvent) => {
+      const now = this.toCanvas(moveEvent);
+      // Snap to the grid the device itself stores positions on.
+      const x = Math.max(0, originX + Math.round((now.x - start.x) / COLUMN_WIDTH));
+      const y = Math.max(0, originY + Math.round((now.y - start.y) / ROW_HEIGHT));
+      if (x === placed.module.x && y === placed.module.y) return;
+      placed.module.x = x;
+      placed.module.y = y;
+      this.positionModule(placed);
+      this.renderCables();
+    };
 
-      handle.addEventListener('pointermove', move);
-      handle.addEventListener('pointerup', up);
-    });
+    const up = () => {
+      this.element.releasePointerCapture(event.pointerId);
+      this.element.removeEventListener('pointermove', move);
+      this.element.removeEventListener('pointerup', up);
+      if (placed.module.x !== originX || placed.module.y !== originY) {
+        this.options.onModuleMove?.(placed.module, placed.module.x, placed.module.y);
+      }
+    };
+
+    this.element.addEventListener('pointermove', move);
+    this.element.addEventListener('pointerup', up);
   }
 
   private select(module: PatchModule | null): void {
@@ -340,13 +346,50 @@ export class PatchView {
         event.stopPropagation();
         this.removeCable(cable);
       });
+      // A cable is thin; widen it on hover so it is obvious what will be cut.
+      group.addEventListener('pointerenter', () => {
+        line.setAttribute('stroke-width', '4.5');
+        line.setAttribute('stroke-dasharray', '6 3');
+      });
+      group.addEventListener('pointerleave', () => {
+        line.setAttribute('stroke-width', '2.5');
+        line.removeAttribute('stroke-dasharray');
+      });
+
       const tip = el('title');
-      tip.textContent = `#${cable.sourceModule}:${cable.sourceConnector} → ` +
-        `#${cable.destModule}:${cable.destConnector} (click to delete)`;
+      tip.textContent =
+        `${this.describeEnd(cable.sourceModule, cable.sourceConnector, cable.sourceIsOutput)}` +
+        ` → ${this.describeEnd(cable.destModule, cable.destConnector, 0)}` +
+        ' — click to disconnect';
 
       group.append(hit, line, tip);
       this.cableLayer.appendChild(group);
     }
+  }
+
+  /** Names a cable end the way the panel labels it, for tooltips. */
+  private describeEnd(moduleIndex: number, connectorIndex: number, isOutput: number): string {
+    const placed = this.placed.get(moduleIndex);
+    if (!placed) return `#${moduleIndex}:${connectorIndex}`;
+    const connector = placed.def.connectors.find(
+      (c) => c.index === connectorIndex && c.direction === (isOutput ? 'output' : 'input'),
+    );
+    const label = placed.module.name || placed.def.name;
+    return connector ? `${label} ${connector.name}` : `${label} #${connectorIndex}`;
+  }
+
+  /** Disconnects every cable attached to a connector. */
+  disconnectAt(ref: ConnectorRef): number {
+    const attached = this.cables.filter(
+      (c) =>
+        (c.sourceModule === ref.moduleIndex &&
+          c.sourceConnector === ref.connectorIndex &&
+          c.sourceIsOutput === ref.isOutput) ||
+        (c.destModule === ref.moduleIndex && c.destConnector === ref.connectorIndex &&
+          ref.isOutput === 0),
+    );
+    for (const cable of attached) this.removeCable(cable);
+    return attached.length;
   }
 
   private removeCable(cable: PatchCable): void {
@@ -386,15 +429,38 @@ export class PatchView {
       this.applyTransform();
     }, { passive: false });
 
+    // Double-clicking a connector clears everything plugged into it, which is
+    // quicker than cutting each cable when unpicking a busy input.
+    this.element.addEventListener('dblclick', (event: MouseEvent) => {
+      if (isModuleControl(event.target)) return;
+      const rect = this.element.getBoundingClientRect();
+      const point = {
+        x: (event.clientX - rect.left - this.view.x) / this.view.scale,
+        y: (event.clientY - rect.top - this.view.y) / this.view.scale,
+      };
+      const connector = this.connectorAt(point.x, point.y);
+      if (!connector) return;
+      event.preventDefault();
+      this.disconnectAt(connector);
+    });
+
+    // One dispatcher decides what a press means, in priority order:
+    // a control operates itself, a connector starts a cable, a module body
+    // drags the module, and only bare canvas pans.
     this.element.addEventListener('pointerdown', (event: PointerEvent) => {
-      // A press that landed on a module control belongs to that control. The
-      // controls stop propagation themselves, but this keeps a newly added
-      // widget from silently panning the canvas instead of being operated.
       if (isModuleControl(event.target)) return;
 
+      // Cables sit above the modules, so a press on one must not be taken as a
+      // press on the module behind it. Its own handler does the disconnect.
+      if (ancestorWithClass(event.target, 'cable')) return;
+
       const point = this.toCanvas(event);
+
       const connector = this.connectorAt(point.x, point.y);
       if (connector) return this.beginCableDrag(event, connector);
+
+      const placed = this.moduleAt(point.x, point.y);
+      if (placed) return this.beginModuleDrag(event, placed);
 
       // Empty space: pan, and clear the selection.
       this.select(null);
