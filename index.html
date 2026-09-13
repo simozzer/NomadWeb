@@ -7,54 +7,31 @@
     <link rel="stylesheet" href="/src/ui/styles.css" />
   </head>
   <body>
-    <header class="topbar">
+    <header class="topbar" id="connection">
       <h1>Nomad Web</h1>
-      <span class="subtitle">Nord Modular editor · Web MIDI</span>
+
+      <div class="device-bar">
+        <button id="request-access" type="button">Request MIDI access</button>
+
+        <span class="ports" id="port-pickers" hidden>
+          <label>In <select id="input-port"></select></label>
+          <label>Out <select id="output-port"></select></label>
+          <button id="connect" type="button">Open ports</button>
+          <button id="identify" type="button" disabled>Identify</button>
+        </span>
+
+        <span class="identity" id="identity" hidden></span>
+      </div>
+
       <div class="spacer"></div>
+      <span class="hint hint--inline" id="connection-hint">
+        Web MIDI needs permission and a secure context.
+      </span>
       <span id="device-status" class="status status--idle">not connected</span>
     </header>
 
     <div class="app">
       <aside class="sidebar" id="sidebar">
-        <section class="panel" id="connection">
-          <h2>Device</h2>
-          <p class="hint" id="connection-hint">
-            Web MIDI needs permission and a secure context (HTTPS or localhost).
-          </p>
-          <div class="row">
-            <button id="request-access" type="button">Request MIDI access</button>
-          </div>
-          <div class="row" id="port-pickers" hidden>
-            <label>In <select id="input-port"></select></label>
-            <label>Out <select id="output-port"></select></label>
-            <button id="connect" type="button">Open ports</button>
-            <button id="identify" type="button" disabled>Identify</button>
-          </div>
-
-          <div id="diagnostics" hidden>
-            <p class="hint">
-              <strong>If Identify times out, check the input path first:</strong>
-              turn a knob on the Nord. If the counters stay at zero the input port
-              is wrong — no outgoing message can help that.
-            </p>
-            <div class="counters" id="counters"></div>
-            <div class="row">
-              <button id="probe" type="button">Identify (no wait)</button>
-              <button id="clear-log" type="button">Clear log</button>
-            </div>
-            <div class="row">
-              <label class="inline">
-                <input type="checkbox" id="show-stream" /> log meters &amp; lights
-              </label>
-              <label class="inline">
-                <input type="checkbox" id="show-raw" checked /> log raw bytes
-              </label>
-            </div>
-          </div>
-
-          <dl class="identity" id="identity" hidden></dl>
-        </section>
-
         <section class="panel" id="patches">
           <h2>Patches <span class="count" id="patch-count"></span></h2>
           <div class="row">
@@ -79,7 +56,7 @@
               <input type="checkbox" id="hide-empty" checked /> hide empty
             </label>
           </div>
-          <p class="hint" id="patch-hint">Identify the device first.</p>
+          <p class="hint" id="patch-hint">Connect the device first.</p>
           <div id="patch-list" class="patch-list"></div>
         </section>
 
@@ -140,12 +117,23 @@
           </div>
         </section>
 
-        <section class="monitor" id="monitor">
+        <section class="monitor">
           <header class="monitor-bar">
             <button id="toggle-monitor" type="button" class="disclosure" aria-expanded="false">
               MIDI monitor
             </button>
+            <div class="counters counters--inline" id="counters"></div>
             <div class="spacer"></div>
+            <div class="row row--flush" id="diagnostics" hidden>
+              <label class="inline">
+                <input type="checkbox" id="show-stream" /> meters &amp; lights
+              </label>
+              <label class="inline">
+                <input type="checkbox" id="show-raw" checked /> raw bytes
+              </label>
+              <button id="probe" type="button">Identify (no wait)</button>
+              <button id="clear-log" type="button">Clear</button>
+            </div>
           </header>
           <pre id="log" class="log" hidden></pre>
         </section>

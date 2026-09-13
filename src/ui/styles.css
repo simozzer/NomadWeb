@@ -116,9 +116,9 @@ button { cursor: pointer; }
 button:hover { border-color: var(--accent); }
 button:disabled { opacity: .5; cursor: not-allowed; }
 
-.identity { display: grid; grid-template-columns: auto 1fr; gap: 2px 14px; margin: 6px 0 0; font-size: 12px; }
-.identity dt { color: var(--ink-dim); }
-.identity dd { margin: 0; }
+
+
+
 
 .module-grid {
   display: flex;
@@ -391,3 +391,62 @@ svg.module text.module-title { display: none; }
 .patch-module--selected .module-strip { fill: var(--accent); }
 .patch-module--selected .module-name { fill: #1a1a1a; }
 .patch-module--selected .module-badge { fill: rgba(0,0,0,.6); }
+
+/* ---- device bar ---- */
+
+.topbar { flex-wrap: wrap; row-gap: 6px; align-items: center; }
+.topbar h1 { margin-right: 4px; }
+
+.device-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.device-bar .ports { display: flex; align-items: center; gap: 8px; }
+
+/* Inline labels in the bar read as "In [select]" on one line. */
+.device-bar label {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: var(--ink-dim);
+}
+
+.device-bar select { max-width: 190px; }
+.device-bar button, .device-bar select { padding: 4px 8px; }
+
+.identity {
+  font-size: 11px;
+  color: var(--ink-dim);
+  padding: 3px 9px;
+  border: 1px solid var(--panel-edge);
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+/* The hint is advisory; it must never push the status badge off the bar. */
+#connection-hint {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: right;
+}
+
+/* ---- counters, inline in the monitor bar ---- */
+
+.counters--inline { gap: 10px; margin: 0; flex-wrap: nowrap; }
+
+.counters--inline .counter {
+  flex-direction: row;
+  align-items: baseline;
+  gap: 5px;
+  min-width: 0;
+  padding: 0;
+  background: none;
+  border: 0;
+}
+
+.counters--inline .counter strong { font-size: 11px; }
+.counters--inline .counter span { font-size: 10px; }
+
+.monitor-bar { gap: 12px; flex-wrap: wrap; }
+.row--flush { margin-bottom: 0; align-items: center; }

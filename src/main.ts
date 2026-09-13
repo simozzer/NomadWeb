@@ -216,20 +216,13 @@ async function main(): Promise<void> {
       const identity = await nord.identify();
       connected = true;
 
-      const dl = $('identity');
-      dl.hidden = false;
-      dl.replaceChildren();
-      for (const [term, value] of [
-        ['Model', identity.deviceName],
-        ['OS version', identity.version],
-        ['Serial (last 4)', String(identity.serial)],
-      ]) {
-        const dt = document.createElement('dt');
-        dt.textContent = term;
-        const dd = document.createElement('dd');
-        dd.textContent = value;
-        dl.append(dt, dd);
-      }
+      // The model already shows in the status badge, so the bar carries only
+      // what the badge does not.
+      const identityEl = $('identity');
+      identityEl.hidden = false;
+      identityEl.textContent =
+        `OS ${identity.version} · serial ${identity.serial} · ` +
+        `${identity.slotCount} slot${identity.slotCount === 1 ? '' : 's'}`;
 
       setStatus(identity.deviceName, 'ok');
       log('info', `identified ${identity.deviceName}, OS ${identity.version}`);
