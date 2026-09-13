@@ -114,13 +114,25 @@ export class WebMidiTransport {
   async open(inputId: string, outputId: string): Promise<void> {
     if (!this.access) throw new Error('requestAccess() must be called first');
 
+    // Re-opening must not strand the previous pair. MIDI ports are exclusive on
+    // Windows, so a leaked handle blocks every later attempt.
+    await this.close();
+
     const input = this.access.inputs.get(inputId);
     const output = this.access.outputs.get(outputId);
     if (!input) throw new Error(`no MIDI input with id ${inputId}`);
     if (!output) throw new Error(`no MIDI output with id ${outputId}`);
 
-    await input.open();
-    await output.open();
+    try {
+      await input.open();
+      await output.open();
+    } catch (error) {
+      throw new Error(
+        `could not open the MIDI ports: ${(error as Error).message}. ` +
+          'MIDI ports are exclusive — close any other tab or application using ' +
+          'this interface (including a stale tab of this page) and try again.',
+      );
+    }
 
     this.framer.reset();
     input.onmidimessage = (event: MIDIMessageEvent) => {
@@ -143,16 +155,38 @@ export class WebMidiTransport {
   }
 
   async close(): Promise<void> {
+    const input = this.input;
+    const output = this.output;
+    this.input = null;
+    this.output = null;
+
+    if (input) {
+      input.onmidimessage = null;
+      await input.close().catch(() => {});
+    }
+    if (output) {
+      await output.close().catch(() => {});
+    }
+    this.framer.reset();
+  }
+
+  /**
+   * Releases the ports synchronously enough for page teardown.
+   *
+   * `pagehide` will not await a promise, so this fires the closes and returns.
+   * Without it every reload leaks an exclusive port handle and the device
+   * becomes unopenable until the browser is restarted.
+   */
+  releaseSync(): void {
     if (this.input) {
       this.input.onmidimessage = null;
-      await this.input.close();
+      void this.input.close().catch(() => {});
       this.input = null;
     }
     if (this.output) {
-      await this.output.close();
+      void this.output.close().catch(() => {});
       this.output = null;
     }
-    this.framer.reset();
   }
 
   send(message: Uint8Array): void {

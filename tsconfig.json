@@ -18,7 +18,8 @@
     "skipLibCheck": true,
     "isolatedModules": true,
     "types": [
-      "node"
+      "node",
+      "vite/client"
     ]
   },
   "include": [

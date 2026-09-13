@@ -308,10 +308,13 @@ export class NordModular {
       for (let attempt = 0; attempt < MAX_POSITION + 2; attempt++) {
         if (options.shouldStop?.()) return all;
         const reply = this.waitFor('PatchListResponse', options.timeoutMs ?? 3000);
-        this.requestPatchList(bank, position);
+        // Consume the rejection unconditionally: if the send below throws, the
+        // waiter would otherwise time out with nobody awaiting it.
+        reply.catch(() => {});
 
         let entries: PatchListEntry[];
         try {
+          this.requestPatchList(bank, position);
           entries = parsePatchList((await reply).root, bank, position);
         } catch {
           break; // No response for this bank: treat it as the end of the list.

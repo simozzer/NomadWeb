@@ -29,6 +29,27 @@ function setStatus(text: string, kind: 'idle' | 'ok' | 'bad'): void {
   el.className = `status status--${kind}`;
 }
 
+const PORT_CHOICE_KEY = 'nomad-web.ports';
+
+/** Port ids are stable per machine, so the last working pair is worth keeping. */
+function loadPortChoice(): { inputId?: string; outputId?: string } | null {
+  try {
+    const raw = localStorage.getItem(PORT_CHOICE_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+function savePortChoice(inputId: string, outputId: string): void {
+  try {
+    localStorage.setItem(PORT_CHOICE_KEY, JSON.stringify({ inputId, outputId }));
+  } catch {
+    // Storage can be unavailable (private window, blocked site data); the app
+    // works without it, the picker just will not pre-select.
+  }
+}
+
 async function fetchText(url: string): Promise<string> {
   const response = await fetch(url);
   if (!response.ok) throw new Error(`${url} -> ${response.status}`);
@@ -58,6 +79,15 @@ async function main(): Promise<void> {
   const transport = new WebMidiTransport();
   const nord = new NordModular(transport, midiGrammar);
   let connected = false;
+
+  // MIDI ports are exclusive. A page teardown that does not release them leaves
+  // the device unopenable — which a dev server's reload-on-save hits constantly.
+  const release = () => {
+    nord.stop();
+    transport.releaseSync();
+  };
+  window.addEventListener('pagehide', release);
+  import.meta.hot?.dispose(release);
 
   nord.addListener((message, raw) => {
     const streaming = message.messageId === 'meters' || message.messageId === 'lights';
@@ -89,9 +119,16 @@ async function main(): Promise<void> {
     fill(inputSelect, transport.listInputs());
     fill(outputSelect, transport.listOutputs());
 
+    // Prefer the last working pair, then a name that looks like a Nord.
+    const remembered = loadPortChoice();
     const suggestion = transport.suggestPorts();
-    if (suggestion.inputId) inputSelect.value = suggestion.inputId;
-    if (suggestion.outputId) outputSelect.value = suggestion.outputId;
+    const pick = (select: HTMLSelectElement, remembered?: string, guess?: string) => {
+      const has = (id?: string) => !!id && Array.from(select.options).some((o) => o.value === id);
+      if (has(remembered)) select.value = remembered!;
+      else if (has(guess)) select.value = guess!;
+    };
+    pick(inputSelect, remembered?.inputId, suggestion.inputId);
+    pick(outputSelect, remembered?.outputId, suggestion.outputId);
   }
 
   transport.onPortsChanged = () => {
@@ -203,6 +240,7 @@ async function main(): Promise<void> {
   $('connect').addEventListener('click', async () => {
     try {
       await transport.open(inputSelect.value, outputSelect.value);
+      savePortChoice(inputSelect.value, outputSelect.value);
       nord.start();
       $<HTMLButtonElement>('identify').disabled = false;
       $('diagnostics').hidden = false;
@@ -219,6 +257,28 @@ async function main(): Promise<void> {
       log('err', (error as Error).message);
     }
   });
+
+  // A reload should not mean starting from scratch. If ports were opened before,
+  // the SysEx permission is already granted, so this re-opens without prompting.
+  if (loadPortChoice()) {
+    try {
+      await transport.requestAccess();
+      portPickers.hidden = false;
+      refreshPorts();
+      $('connection-hint').textContent = 'Access granted. Choose the Nord’s ports and connect.';
+      if (inputSelect.value && outputSelect.value) {
+        await transport.open(inputSelect.value, outputSelect.value);
+        nord.start();
+        $<HTMLButtonElement>('identify').disabled = false;
+        $('diagnostics').hidden = false;
+        refreshCounters();
+        setStatus('ports open', 'idle');
+        log('info', 'reopened the previous MIDI ports after reload');
+      }
+    } catch (error) {
+      log('info', `could not restore the previous session: ${(error as Error).message}`);
+    }
+  }
 
   // ---- patch list ----
   const bankSelect = $<HTMLSelectElement>('patch-bank');
