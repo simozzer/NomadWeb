@@ -1,7 +1,12 @@
 import { parseModuleCatalogue, type ModuleDef, type ParameterDef } from './model/modules.ts';
 import { parseTheme, type Theme } from './model/theme.ts';
 import { FormatterTable } from './model/formatters.ts';
-import { PatchReader, type Patch, type PatchArea } from './model/patch.ts';
+import {
+  PatchReader,
+  describeLayoutScheme,
+  type Patch,
+  type PatchArea,
+} from './model/patch.ts';
 import { ModuleView } from './ui/moduleView.ts';
 import { PatchView } from './ui/patchView.ts';
 import { WebMidiTransport, MidiUnavailableError } from './midi/webmidi.ts';
@@ -228,6 +233,18 @@ async function main(): Promise<void> {
 
       setStatus(identity.deviceName, 'ok');
       log('info', `identified ${identity.deviceName}, OS ${identity.version}`);
+
+      // The Micro Modular has one slot; the keyboard and rack have four.
+      // Offering slots the device does not have would just send them nowhere.
+      const slots = ['Slot A', 'Slot B', 'Slot C', 'Slot D'].slice(0, identity.slotCount);
+      slotSelect.replaceChildren();
+      slots.forEach((name, index) => {
+        const option = document.createElement('option');
+        option.value = String(index);
+        option.textContent = identity.slotCount === 1 ? 'Patch slot' : name;
+        slotSelect.appendChild(option);
+      });
+      slotSelect.disabled = identity.slotCount === 1;
 
       $<HTMLButtonElement>('fetch-patches').disabled = false;
       $('patch-hint').textContent =
@@ -606,6 +623,12 @@ async function main(): Promise<void> {
         `patch "${patch.name}": sections ${[...patch.sections.keys()].sort((a, b) => a - b).join(', ')} · ` +
           `${patch.modules.length} modules, ${patch.cables.length} cables`,
       );
+
+      // Settles how the device means ypos, from its own data. Worth reading on
+      // a Micro Modular, which has no display to compare the layout against.
+      const scheme = describeLayoutScheme(patch);
+      log('info', `ypos looks ${scheme.verdict} — ${scheme.detail}`);
+
       // Land on whichever area actually has modules.
       if (!patch.modules.some((m) => m.area === currentArea)) {
         currentArea = patch.modules.some((m) => m.area === 'common') ? 'common' : 'voice';

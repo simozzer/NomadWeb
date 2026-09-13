@@ -32,6 +32,18 @@ export interface DeviceIdentity {
   /** Last four digits of the unit's serial number. */
   serial: number;
   version: string;
+  /** How many patch slots this model has. */
+  slotCount: number;
+}
+
+/**
+ * Slots available on a model.
+ *
+ * From `NordModular.getMaxSlotCount`: the Micro Modular (device id 2) has a
+ * single slot; the keyboard and rack have four.
+ */
+export function slotCountFor(deviceId: number): number {
+  return deviceId === 0x02 ? 1 : 4;
 }
 
 /** Banks and positions the device accepts, per GetPatchListMessage's own bounds. */
@@ -356,9 +368,11 @@ export class NordModular {
 
     this.identity = {
       deviceId,
-      deviceName: DEVICE_NAMES[deviceId] ?? `unknown device (0x${deviceId.toString(16)})`,
+      // An unrecognised id is assumed to be a keyboard, as the original does.
+      deviceName: DEVICE_NAMES[deviceId] ?? 'Nord Modular (unrecognised id)',
       serial: ((serial1 & 0x7f) << 7) | (serial2 & 0x7f),
       version: `${high}.${low}`,
+      slotCount: slotCountFor(deviceId),
     };
   }
 

@@ -231,5 +231,44 @@ process.stdout.write('\nParts parsed separately (not concatenated)\n');
   check('all-unreadable is an error, not a silent empty patch', threw, '');
 }
 
+
+process.stdout.write('\nLayout scheme detection\n');
+{
+  const { describeLayoutScheme } = await import('../src/model/patch.ts');
+  const base = { name: '', cables: [], parameters: [], sections: new Map() };
+
+  // Ranks within a column: consecutive integers.
+  const ordinal = describeLayoutScheme({
+    ...base,
+    modules: [
+      { area: 'voice' as const, type: 20, index: 1, x: 0, y: 0 },
+      { area: 'voice' as const, type: 20, index: 2, x: 0, y: 1 },
+      { area: 'voice' as const, type: 20, index: 3, x: 0, y: 2 },
+    ],
+  });
+  check('consecutive ypos reads as ordinal', ordinal.verdict === 'ordinal', ordinal.verdict);
+
+  // Absolute rows: gaps the size of each module.
+  const absolute = describeLayoutScheme({
+    ...base,
+    modules: [
+      { area: 'voice' as const, type: 20, index: 1, x: 0, y: 0 },
+      { area: 'voice' as const, type: 20, index: 2, x: 0, y: 5 },
+      { area: 'voice' as const, type: 20, index: 3, x: 0, y: 10 },
+    ],
+  });
+  check('gapped ypos reads as absolute', absolute.verdict === 'absolute', absolute.verdict);
+
+  // A single module per column proves nothing either way.
+  const thin = describeLayoutScheme({
+    ...base,
+    modules: [
+      { area: 'voice' as const, type: 20, index: 1, x: 0, y: 0 },
+      { area: 'voice' as const, type: 20, index: 2, x: 1, y: 0 },
+    ],
+  });
+  check('one module per column is unclear', thin.verdict === 'unclear', thin.verdict);
+}
+
 process.stdout.write(`\n${pass} ok, ${fail} failed\n`);
 process.exit(fail === 0 ? 0 : 1);

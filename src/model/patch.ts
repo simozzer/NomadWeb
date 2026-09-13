@@ -70,6 +70,57 @@ export interface Patch {
   sections: Map<number, Decoded[]>;
 }
 
+/**
+ * Works out what `ypos` means, from the values a real patch carries.
+ *
+ * Two readings are possible and they look alike until you check the numbers:
+ * an ordinal (rank within the column, so 0,1,2,3) or an absolute row in 15px
+ * units (so spaced by each module's height). The device is the authority, and
+ * on a Micro Modular there is no display to compare against, so this decides it
+ * from the data instead.
+ */
+export function describeLayoutScheme(patch: Patch): {
+  verdict: 'ordinal' | 'absolute' | 'unclear';
+  detail: string;
+} {
+  const columns = new Map<string, PatchModule[]>();
+  for (const module of patch.modules) {
+    const key = `${module.area}:${module.x}`;
+    const list = columns.get(key) ?? [];
+    list.push(module);
+    columns.set(key, list);
+  }
+
+  let ordinalColumns = 0;
+  let absoluteColumns = 0;
+  const samples: string[] = [];
+
+  for (const [key, members] of columns) {
+    if (members.length < 2) continue;
+    members.sort((a, b) => a.y - b.y);
+    const ys = members.map((m) => m.y);
+    if (samples.length < 4) samples.push(`${key} -> [${ys.join(', ')}]`);
+
+    // Consecutive integers from any start means a rank.
+    const consecutive = ys.every((y, i) => i === 0 || y === ys[i - 1] + 1);
+    if (consecutive) ordinalColumns++;
+    // Gaps of two or more suggest rows, since a module spans several.
+    else if (ys.some((y, i) => i > 0 && y - ys[i - 1] >= 2)) absoluteColumns++;
+  }
+
+  const verdict =
+    ordinalColumns > 0 && absoluteColumns === 0 ? 'ordinal'
+    : absoluteColumns > 0 && ordinalColumns === 0 ? 'absolute'
+    : 'unclear';
+
+  return {
+    verdict,
+    detail:
+      `${ordinalColumns} column(s) consecutive, ${absoluteColumns} gapped` +
+      (samples.length ? ` · ${samples.join(' ')}` : ''),
+  };
+}
+
 function one(node: Decoded | undefined, name: string): Decoded | undefined {
   const value = node?.items.get(name);
   return value && !Array.isArray(value) ? value : undefined;
