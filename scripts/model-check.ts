@@ -106,6 +106,55 @@ for (const [componentId, layout] of theme.modules) {
 }
 check('no dangling bindings', dangling === 0, `${bound} bindings checked, ${dangling} dangling`);
 
+process.stdout.write('\nPatch grid geometry\n');
+{
+  // The canvas places a module at (xpos * 255, ypos * 15). Both constants are
+  // derived from the data, so assert they hold for every themed module.
+  const { COLUMN_WIDTH, ROW_HEIGHT } = await import('../src/ui/patchView.ts');
+  let wrongWidth = 0;
+  let wrongRatio = 0;
+
+  for (const def of catalogue.modules.values()) {
+    const layout = theme.modules.get(def.componentId);
+    if (!layout) continue;
+    if (layout.width !== COLUMN_WIDTH) wrongWidth++;
+    if (layout.height !== def.height * ROW_HEIGHT) wrongRatio++;
+  }
+
+  check('every panel is one column wide', wrongWidth === 0,
+    `${COLUMN_WIDTH}px, ${wrongWidth} exceptions`);
+  check('panel height is exactly height x row', wrongRatio === 0,
+    `${ROW_HEIGHT}px per unit, ${wrongRatio} exceptions`);
+
+  // Connector lookup: patch cables address connectors by index and direction,
+  // which must resolve through the catalogue to a placed theme widget.
+  const adsrLayout = theme.modules.get('m20')!;
+  const gate = adsr!.connectors.find((c) => c.name === 'gate')!;
+  const widget = adsrLayout.widgets.find(
+    (w) => w.kind === 'connector' && w.connectorId === gate.componentId,
+  );
+  check('connector index+direction resolves to a placed widget',
+    !!widget && widget.x === 6 && widget.y === 26,
+    widget ? `${gate.componentId} at (${widget.x},${widget.y})` : 'not found');
+
+  // Every connector the patch format can reference must be placeable.
+  let unplaceable = 0;
+  let total = 0;
+  for (const def of catalogue.modules.values()) {
+    const layout = theme.modules.get(def.componentId);
+    if (!layout) continue;
+    const placed = new Set(
+      layout.widgets.filter((w) => w.kind === 'connector').map((w) => w.connectorId),
+    );
+    for (const connector of def.connectors) {
+      total++;
+      if (!placed.has(connector.componentId)) unplaceable++;
+    }
+  }
+  check('every connector has a position', unplaceable === 0,
+    `${total} connectors, ${unplaceable} unplaceable`);
+}
+
 process.stdout.write('\nFormatters (nmformat.js)\n');
 const formatters = new FormatterTable(read('nmformat.js'));
 const referenced = new Set<string>();

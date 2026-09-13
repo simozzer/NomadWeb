@@ -182,3 +182,34 @@ label.inline { flex-direction: row; align-items: center; gap: 5px; }
 .patch-row:disabled { cursor: default; }
 .patch-row:not(:disabled):hover { border-color: var(--accent); }
 .patch-row--active { border-color: var(--accent); background: #2a2417; }
+
+.canvas-host {
+  height: 62vh;
+  min-height: 360px;
+  background:
+    repeating-linear-gradient(0deg, #191c21 0 1px, transparent 1px 15px),
+    #14161a;
+  border: 1px solid var(--panel-edge);
+  border-radius: 6px;
+  overflow: hidden;
+  touch-action: none;
+}
+
+svg.patch-canvas { display: block; width: 100%; height: 100%; cursor: grab; }
+
+.patch-module { transition: filter .12s; }
+.patch-module--selected { filter: drop-shadow(0 0 0 2px var(--accent)) brightness(1.06); }
+.cables path { pointer-events: stroke; }
+
+.tabs { display: flex; gap: 0; border: 1px solid var(--panel-edge); border-radius: 6px; overflow: hidden; }
+
+.tab {
+  border: 0;
+  border-radius: 0;
+  background: #20242b;
+  color: var(--ink-dim);
+  padding: 6px 12px;
+}
+
+.tab--active { background: #2e333c; color: var(--ink); box-shadow: inset 0 -2px 0 var(--accent); }
+.hint--inline { margin: 0; flex: 1; min-width: 220px; }

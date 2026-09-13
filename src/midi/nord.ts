@@ -493,6 +493,86 @@ export class NordModular {
     return dump;
   }
 
+  /**
+   * Sends a patch modification.
+   *
+   * All of these share the `PatchModification` shape under `PatchHandling`;
+   * `MoveModuleMessage` and friends confirm the paths as `data:data:pid` and
+   * `data:data:sc`.
+   */
+  private modifyPatch(slot: number, sc: number, payload: MessageInit): Uint8Array {
+    return this.send(CC.PatchHandling, slot, {
+      data: { data: { pid: 0, sc, data: payload } },
+    });
+  }
+
+  /** Moves a module on the patch grid. `sc` 0x34, per MoveModuleMessage. */
+  moveModule(slot: number, area: 0 | 1, moduleIndex: number, x: number, y: number): Uint8Array {
+    return this.modifyPatch(slot, 0x34, {
+      section: area,
+      module: moduleIndex,
+      xpos: x,
+      ypos: y,
+    });
+  }
+
+  /**
+   * Connects two connectors. `sc` 0x50, per NewCableMessage.
+   *
+   * `type1`/`type2` say whether each end is an output (1) or an input (0) —
+   * the Nord allows chaining from an input, so both ends are explicit.
+   */
+  addCable(
+    slot: number,
+    area: 0 | 1,
+    color: number,
+    from: { module: number; connector: number; isOutput: number },
+    to: { module: number; connector: number; isOutput: number },
+  ): Uint8Array {
+    return this.modifyPatch(slot, 0x50, {
+      section: area,
+      color,
+      module1: from.module, type1: from.isOutput, connector1: from.connector,
+      module2: to.module, type2: to.isOutput, connector2: to.connector,
+    });
+  }
+
+  /** Removes a cable between two connectors. `sc` 0x51, per DeleteCableMessage. */
+  deleteCable(
+    slot: number,
+    area: 0 | 1,
+    from: { module: number; connector: number; isOutput: number },
+    to: { module: number; connector: number; isOutput: number },
+  ): Uint8Array {
+    return this.modifyPatch(slot, 0x51, {
+      section: area,
+      module1: from.module, type1: from.isOutput, connector1: from.connector,
+      module2: to.module, type2: to.isOutput, connector2: to.connector,
+    });
+  }
+
+  /** Removes a module from the patch. `sc` 0x32. */
+  deleteModule(slot: number, area: 0 | 1, moduleIndex: number): Uint8Array {
+    return this.modifyPatch(slot, 0x32, { section: area, module: moduleIndex });
+  }
+
+  /** Sets a single parameter value. `sc` 0x40 under the Parameter command. */
+  setParameter(
+    slot: number,
+    area: 0 | 1,
+    moduleIndex: number,
+    parameterIndex: number,
+    value: number,
+  ): Uint8Array {
+    return this.send(CC.Parameter, slot, {
+      data: {
+        pid: 0,
+        sc: 0x40,
+        data: { section: area, module: moduleIndex, parameter: parameterIndex, value },
+      },
+    });
+  }
+
   /** Resolves on the next message with the given id, or rejects on timeout. */
   waitFor(messageId: string, timeoutMs = 2000): Promise<DecodeResult> {
     return new Promise((resolve, reject) => {

@@ -80,9 +80,20 @@
       </section>
 
       <section class="panel" id="current-patch" hidden>
-        <h2>Loaded patch <span class="count" id="loaded-summary"></span></h2>
+        <h2>Patch editor <span class="count" id="loaded-summary"></span></h2>
+        <div class="row">
+          <div class="tabs" id="area-tabs">
+            <button type="button" data-area="voice" class="tab tab--active">Voice area</button>
+            <button type="button" data-area="common" class="tab">Common / FX</button>
+          </div>
+          <button id="fit-view" type="button">Fit</button>
+          <span class="hint hint--inline">
+            Drag a module by its title. Drag connector to connector to patch a
+            cable; click a cable to cut it. Scroll to zoom, drag the background to pan.
+          </span>
+        </div>
         <p class="hint" id="loaded-hint"></p>
-        <div id="loaded-modules" class="module-grid"></div>
+        <div id="patch-canvas-host" class="canvas-host"></div>
       </section>
 
       <section class="panel" id="browser">

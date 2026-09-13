@@ -1,13 +1,9 @@
-import {
-  parseModuleCatalogue,
-  controlParameters,
-  type ModuleDef,
-  type ParameterDef,
-} from './model/modules.ts';
+import { parseModuleCatalogue, type ModuleDef, type ParameterDef } from './model/modules.ts';
 import { parseTheme, type Theme } from './model/theme.ts';
 import { FormatterTable } from './model/formatters.ts';
-import { PatchReader, type Patch, type PatchModule } from './model/patch.ts';
+import { PatchReader, type Patch, type PatchArea } from './model/patch.ts';
 import { ModuleView } from './ui/moduleView.ts';
+import { PatchView } from './ui/patchView.ts';
 import { WebMidiTransport, MidiUnavailableError } from './midi/webmidi.ts';
 import { NordModular, CC, MAX_BANKS, type PatchListEntry } from './midi/nord.ts';
 import { formatSysex } from './midi/framing.ts';
@@ -360,90 +356,113 @@ async function main(): Promise<void> {
 
   const slotSelect = $<HTMLSelectElement>('target-slot');
   const loadedPanel = $('current-patch');
-  const loadedModules = $('loaded-modules');
+  const canvasHost = $('patch-canvas-host');
   const loadedHint = $('loaded-hint');
   let loading = false;
 
-  /** Renders a patch's modules, with each module's stored values applied. */
-  function renderLoadedPatch(patch: Patch): void {
-    loadedModules.replaceChildren();
+  let currentPatch: Patch | null = null;
+  let currentArea: PatchArea = 'voice';
+  let patchView: PatchView | null = null;
 
-    // Parameters are stored positionally, in the order modules.xml declares
-    // that module's controls.
-    const valuesFor = (module: PatchModule): number[] => {
-      const dump = patch.parameters.find((p) => p.area === module.area);
-      return dump?.byModule.get(module.index) ?? [];
-    };
+  for (const tab of Array.from($('area-tabs').querySelectorAll<HTMLButtonElement>('.tab'))) {
+    tab.addEventListener('click', () => {
+      currentArea = tab.dataset.area === 'common' ? 'common' : 'voice';
+      for (const other of $('area-tabs').querySelectorAll('.tab')) {
+        other.classList.toggle('tab--active', other === tab);
+      }
+      renderLoadedPatch();
+    });
+  }
 
-    let unrendered = 0;
-    for (const module of patch.modules) {
-      const def = catalogue.modules.get(module.type);
-      const moduleTheme = def && theme.modules.get(def.componentId);
-      if (!def || !moduleTheme) { unrendered++; continue; }
+  $('fit-view').addEventListener('click', () => {
+    patchView?.fit(canvasHost.clientWidth, canvasHost.clientHeight);
+  });
 
-      const card = document.createElement('div');
-      card.className = 'module-card';
+  /** Renders the patch on the canvas for the currently selected area. */
+  function renderLoadedPatch(): void {
+    if (!currentPatch) return;
+    const patch = currentPatch;
+    const area = currentArea;
+    const slot = Number(slotSelect.value);
+    const areaBit: 0 | 1 = area === 'common' ? 1 : 0;
 
-      const header = document.createElement('header');
-      const label = document.createElement('span');
-      label.textContent = module.name || def.name;
-      const meta = document.createElement('span');
-      meta.textContent = `${module.area} #${module.index}`;
-      header.append(label, meta);
-      card.appendChild(header);
+    canvasHost.replaceChildren();
+    patchView = new PatchView({
+      patch,
+      area,
+      catalogue,
+      theme,
+      format: (parameter, value) => formatters.format(parameter.formatter, value),
 
-      const view = new ModuleView({
-        def,
-        theme: moduleTheme,
-        imageBase: '/data/theme-images',
-        format: (parameter, value) => formatters.format(parameter.formatter, value),
-        onParameterChange: (parameter, value) =>
-          sendParameterChange(module, parameter, value),
-      });
+      onParameterChange: (module, parameter, value) => {
+        send(
+          () => nord.setParameter(slot, areaBit, module.index, parameter.index, value),
+          `#${module.index} ${parameter.name} = ${value} ` +
+            `(${formatters.format(parameter.formatter, value)})`,
+        );
+      },
 
-      const stored = valuesFor(module);
-      controlParameters(def).forEach((parameter, i) => {
-        if (i < stored.length) view.setValue(parameter.componentId, stored[i]);
-      });
+      onModuleMove: (module, x, y) => {
+        send(
+          () => nord.moveModule(slot, areaBit, module.index, x, y),
+          `move #${module.index} to (${x}, ${y})`,
+        );
+      },
 
-      card.appendChild(view.element);
-      loadedModules.appendChild(card);
-    }
+      onCableAdd: (from, to, color) => {
+        send(
+          () => nord.addCable(
+            slot, areaBit, color,
+            { module: from.moduleIndex, connector: from.connectorIndex, isOutput: from.isOutput },
+            { module: to.moduleIndex, connector: to.connectorIndex, isOutput: to.isOutput },
+          ),
+          `patch #${from.moduleIndex}:${from.connectorIndex} → ` +
+            `#${to.moduleIndex}:${to.connectorIndex}`,
+        );
+      },
 
-    const areas = new Set(patch.modules.map((m) => m.area));
+      onCableDelete: (cable) => {
+        send(
+          () => nord.deleteCable(
+            slot, areaBit,
+            {
+              module: cable.sourceModule,
+              connector: cable.sourceConnector,
+              isOutput: cable.sourceIsOutput,
+            },
+            { module: cable.destModule, connector: cable.destConnector, isOutput: 0 },
+          ),
+          `cut #${cable.sourceModule}:${cable.sourceConnector} → ` +
+            `#${cable.destModule}:${cable.destConnector}`,
+        );
+      },
+    });
+
+    canvasHost.appendChild(patchView.element);
+    patchView.fit(canvasHost.clientWidth || 900, canvasHost.clientHeight || 460);
+
+    const inArea = patch.modules.filter((m) => m.area === area);
+    const undrawn = inArea.filter((m) => {
+      const def = catalogue.modules.get(m.type);
+      return !def || !theme.modules.get(def.componentId);
+    }).length;
+
     $('loaded-summary').textContent =
-      `${patch.modules.length} modules, ${patch.cables.length} cables` +
-      (areas.size > 1 ? ' (voice + common)' : '');
-    loadedHint.textContent = unrendered
-      ? `${unrendered} module(s) have no themed layout and are not drawn.`
+      `${patch.name || '(unnamed)'} — ${inArea.length} modules, ` +
+      `${patch.cables.filter((c) => c.area === area).length} cables`;
+    loadedHint.textContent = undrawn
+      ? `${undrawn} module(s) in this area have no themed layout and are not drawn.`
       : '';
     loadedPanel.hidden = false;
   }
 
-  /** Sends a live parameter edit for a module that exists in the loaded patch. */
-  function sendParameterChange(
-    module: PatchModule,
-    parameter: ParameterDef,
-    value: number,
-  ): void {
-    const slot = Number(slotSelect.value);
-    const shown = formatters.format(parameter.formatter, value);
+  /** Sends an edit, logging the wire bytes and surfacing any failure. */
+  function send(build: () => Uint8Array, description: string): void {
     try {
-      const message = nord.send(CC.Parameter, slot, {
-        data: {
-          pid: 0,
-          sc: 0x40,
-          data: {
-            section: module.area === 'common' ? 1 : 0,
-            module: module.index,
-            parameter: parameter.index,
-            value,
-          },
-        },
-      });
-      log('out', `#${module.index} ${parameter.name} = ${value} (${shown})  ${formatSysex(message)}`);
+      const message = build();
+      log('out', `${description}  ${formatSysex(message)}`);
     } catch (error) {
-      log('err', (error as Error).message);
+      log('err', `${description}: ${(error as Error).message}`);
     }
   }
 
@@ -465,7 +484,15 @@ async function main(): Promise<void> {
       log('info', `patch dump: ${bitstream.length} bytes of bitstream`);
 
       const patch = patchReader.read(bitstream);
-      renderLoadedPatch(patch);
+      currentPatch = patch;
+      // Land on whichever area actually has modules.
+      if (!patch.modules.some((m) => m.area === currentArea)) {
+        currentArea = patch.modules.some((m) => m.area === 'common') ? 'common' : 'voice';
+        for (const tab of $('area-tabs').querySelectorAll<HTMLElement>('.tab')) {
+          tab.classList.toggle('tab--active', tab.dataset.area === currentArea);
+        }
+      }
+      renderLoadedPatch();
       patchHint.textContent =
         `Loaded "${patch.name || entry.name}" into ${slotName} — ` +
         `${patch.modules.length} modules, ${patch.cables.length} cables.`;

@@ -54,22 +54,36 @@ truth — including the checksum rule, which the grammar expresses declaratively
 
 **Working and verified**
 
-- PDL2 grammar parsing — 71 protocol rules, 132 patch rules
-- Decoding real SysEx captures, with checksum validation
-- Encoding outbound messages with correct checksums; round-trips verified
-- SysEx framing with resync (see `NOTES-protocol.md`)
-- Module catalogue and panel layouts: 1066 widget bindings, none dangling
+- PDL2 engine — 71 protocol rules, 132 patch rules, parsed from the spec files
+- Backtracking decoder (continuation-passing), needed for the recursive
+  optional chains in the patch list and patch dumps
+- Device handshake, patch list, patch load and patch dump over Web MIDI
+- Patch canvas: modules on the 255x15 grid, cables, drag, patch and cut
+- Live edits sent as real messages: parameter, module move, cable add/delete
+- Module catalogue and panel layouts: 1066 bindings, 382 connectors, none dangling
 - All 45 value formatters compile and evaluate
-- SVG panel rendering with draggable knobs, buttons, sliders and keyboard control
+
+103 checks pass (Unknown command: "test"
+
+
+Did you mean this?
+  npm test # Test a package
+To see a list of supported npm commands, run:
+  npm help).
 
 **Not yet done**
 
-- Patch load/store — `patch.pdl2` is parsed but not yet wired to the patch model
-- The patch canvas: placing modules, drawing cables
-- Live parameter sync to the device (needs a loaded patch for module addressing)
+- Adding modules to a patch ( goes via a patch packet, cc 0x1f)
+- Storing a patch back to a bank, and .pch file import/export
+- Undo
+- Morph assignments, knob and MIDI-controller mappings
 - Custom panel graphics — LFO shapes, envelope curves — drawn as placeholders
-- **Nothing has been tested against real hardware.** The message layer is verified
-  against recorded captures only.
+- Meters and LEDs are decoded but not shown on the panels
+
+**Hardware status.** Device identification, the patch list and patch loading have
+been exercised against a real Nord Modular. The canvas edit messages
+(move, cable add/delete) are verified against their bit layouts in tests but have
+not been confirmed on hardware.
 
 ## Licence
 
