@@ -412,6 +412,15 @@ export class Pdl2EncodeError extends Error {
   }
 }
 
+export interface EncodeOptions {
+  /**
+   * Values that replace a field's computed assignment, mirroring
+   * `DecodeOptions.overrides`. Needed to write a `PatchPacket`, whose payload
+   * length is pinned to zero by the grammar (`%HACK:16 = (0)`).
+   */
+  overrides?: Record<string, number>;
+}
+
 export class Pdl2Encoder {
   private readonly grammar: Grammar;
 
@@ -419,10 +428,10 @@ export class Pdl2Encoder {
     this.grammar = grammar;
   }
 
-  encode(data: MessageInit, startRule?: string): Uint8Array {
+  encode(data: MessageInit, options: EncodeOptions = {}): Uint8Array {
     const writer = new BitWriter();
-    const rule = this.requireRule(startRule ?? this.grammar.start);
-    this.encodeRule(rule, data, writer, new Scope(null));
+    const rule = this.requireRule(this.grammar.start);
+    this.encodeRule(rule, data, writer, new Scope(null), options);
     return writer.toBytes();
   }
 
@@ -432,9 +441,15 @@ export class Pdl2Encoder {
     return rule;
   }
 
-  private encodeRule(rule: Rule, data: MessageInit, writer: BitWriter, parent: Scope): void {
+  private encodeRule(
+    rule: Rule,
+    data: MessageInit,
+    writer: BitWriter,
+    parent: Scope,
+    options: EncodeOptions,
+  ): void {
     if (rule.alignment) writer.align(rule.alignment);
-    this.encodeItems(rule.body, data, writer, new Scope(parent));
+    this.encodeItems(rule.body, data, writer, new Scope(parent), options);
   }
 
   private encodeItems(
@@ -442,6 +457,7 @@ export class Pdl2Encoder {
     data: MessageInit,
     writer: BitWriter,
     scope: Scope,
+    options: EncodeOptions,
   ): void {
     const sum = (from: number, to: number, unit: number) => writer.sumRange(from, to, unit);
 
@@ -454,9 +470,12 @@ export class Pdl2Encoder {
         case 'var': {
           let value: number;
           const supplied = data[item.name];
+          const override = options.overrides?.[item.name];
 
-          if (item.value) {
-            // Computed fields (checksums, derived flags) always win.
+          if (override !== undefined) {
+            value = override;
+          } else if (item.value) {
+            // Computed fields (checksums, derived flags) otherwise win.
             value = evaluate(item.value, scope, sum);
           } else if (typeof supplied === 'number') {
             value = supplied;
@@ -478,7 +497,7 @@ export class Pdl2Encoder {
             if (item.optional) break;
             throw new Pdl2EncodeError(`missing nested value for ${item.rule}$${item.item}`);
           }
-          this.encodeRule(target, child, writer, scope);
+          this.encodeRule(target, child, writer, scope, options);
           break;
         }
 
@@ -486,13 +505,13 @@ export class Pdl2Encoder {
           const selector = evaluate(item.selector, scope, sum);
           const matched = item.cases.find((c) => c.value === selector);
           if (matched) {
-            this.encodeItems(matched.body, data, writer, scope);
+            this.encodeItems(matched.body, data, writer, scope, options);
           } else if (item.fallback === 'fail') {
             throw new Pdl2EncodeError(
               `no case for selector value 0x${selector.toString(16)}`,
             );
           } else if (Array.isArray(item.fallback)) {
-            this.encodeItems(item.fallback, data, writer, scope);
+            this.encodeItems(item.fallback, data, writer, scope, options);
           }
           break;
         }
@@ -508,7 +527,7 @@ export class Pdl2Encoder {
 
           for (const branch of item.alternatives) {
             try {
-              this.encodeItems(branch, data, writer, scope);
+              this.encodeItems(branch, data, writer, scope, options);
               encoded = true;
               break;
             } catch (error) {
@@ -536,7 +555,7 @@ export class Pdl2Encoder {
           } else if (item.body.kind === 'rule') {
             const list = (data[item.body.item] as MessageInit[] | undefined) ?? [];
             const target = this.requireRule(item.body.rule);
-            for (const entry of list) this.encodeRule(target, entry, writer, scope);
+            for (const entry of list) this.encodeRule(target, entry, writer, scope, options);
           }
           break;
         }

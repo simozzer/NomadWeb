@@ -61,6 +61,14 @@
               <option value="all">All banks</option>
             </select>
           </label>
+          <label>Into slot
+            <select id="target-slot">
+              <option value="0">Slot A</option>
+              <option value="1">Slot B</option>
+              <option value="2">Slot C</option>
+              <option value="3">Slot D</option>
+            </select>
+          </label>
           <button id="fetch-patches" type="button" disabled>Fetch patch list</button>
           <button id="cancel-patches" type="button" hidden>Cancel</button>
           <label class="inline">
@@ -69,6 +77,12 @@
         </div>
         <p class="hint" id="patch-hint">Identify the device first.</p>
         <div id="patch-list" class="patch-list"></div>
+      </section>
+
+      <section class="panel" id="current-patch" hidden>
+        <h2>Loaded patch <span class="count" id="loaded-summary"></span></h2>
+        <p class="hint" id="loaded-hint"></p>
+        <div id="loaded-modules" class="module-grid"></div>
       </section>
 
       <section class="panel" id="browser">

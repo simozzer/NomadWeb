@@ -117,6 +117,47 @@ export function parsePatchList(
   return entries;
 }
 
+/** Reads the 5-bit command code out of a raw frame's third byte. */
+export function commandCodeOf(raw: Uint8Array): number {
+  return raw.length > 2 ? (raw[2] >> 2) & 0x1f : -1;
+}
+
+/**
+ * Supplies the payload length for a patch packet.
+ *
+ * `PatchPacket` pins its own length to zero (`%HACK:16 = (0)`) — a stop-gap the
+ * upstream author left in place because their Java parser overflowed its stack
+ * on long patch messages. The host is expected to provide the real count.
+ *
+ * The frame is `F0 33 cc 06 <command/pid> <payload...> <checksum> F7`, so the
+ * payload is everything but those seven bytes.
+ */
+export function patchPacketOverrides(raw: Uint8Array): Record<string, number> | undefined {
+  const cc = commandCodeOf(raw);
+  if (cc < CC.PatchPacketBase || cc > CC.PatchPacketBase + 3) return undefined;
+  return { HACK: Math.max(0, raw.length - 7) };
+}
+
+/**
+ * Concatenates the 7 significant bits of each payload byte into a bitstream.
+ *
+ * SysEx data bytes cannot use the top bit, so the patch bitstream is carried
+ * seven bits at a time. `PatchMessage.getEmbeddedStream` does the same, masking
+ * with `0x7f` and appending in 7-bit groups.
+ */
+export function unpack7Bit(payload: Uint8Array): Uint8Array {
+  const out = new Uint8Array(Math.ceil((payload.length * 7) / 8));
+  let bitPos = 0;
+  for (const byte of payload) {
+    const value = byte & 0x7f;
+    for (let bit = 6; bit >= 0; bit--) {
+      if ((value >> bit) & 1) out[bitPos >> 3] |= 0x80 >> (bitPos & 7);
+      bitPos++;
+    }
+  }
+  return out;
+}
+
 export type MessageListener = (message: DecodeResult, raw: Uint8Array) => void;
 
 export interface NordLogEntry {
@@ -184,7 +225,10 @@ export class NordModular {
   private handleIncoming(raw: Uint8Array): void {
     let result: DecodeResult;
     try {
-      result = this.decoder.decode(raw, { validateComputed: true });
+      result = this.decoder.decode(raw, {
+        validateComputed: true,
+        overrides: patchPacketOverrides(raw),
+      });
     } catch (error) {
       // A message we cannot parse is logged and dropped rather than thrown:
       // the device emits continuous meter/light traffic and one bad frame
@@ -335,6 +379,118 @@ export class NordModular {
     }
 
     return all;
+  }
+
+  /**
+   * Tells the device to load a stored patch into one of its four slots.
+   *
+   * Codes and nesting come from `LoadPatchMessage`, whose parameter paths are
+   * literally `data:data:command:data:slot` and friends.
+   */
+  loadPatch(slot: number, bank: number, position: number): Uint8Array {
+    if (slot < 0 || slot > 3) throw new RangeError(`invalid slot ${slot} (0-3)`);
+    if (bank < 0 || bank >= MAX_BANKS) throw new RangeError(`invalid bank ${bank}`);
+    if (position < 0 || position > MAX_POSITION) {
+      throw new RangeError(`invalid position ${position}`);
+    }
+    return this.send(CC.PatchHandling, slot, {
+      data: {
+        data: {
+          pp: 0x41,
+          command: { ssc: 0x0a, data: { slot, section: bank, position } },
+        },
+      },
+    });
+  }
+
+  /** Asks the device to dump the patch currently in `slot`. */
+  requestPatch(slot: number): Uint8Array {
+    if (slot < 0 || slot > 3) throw new RangeError(`invalid slot ${slot} (0-3)`);
+    return this.send(CC.PatchHandling, slot, {
+      data: { data: { pp: 0x41, command: { ssc: 0x35, data: {} } } },
+    });
+  }
+
+  /** Selects which slot the front panel is editing. */
+  activateSlot(slot: number): Uint8Array {
+    if (slot < 0 || slot > 3) throw new RangeError(`invalid slot ${slot} (0-3)`);
+    return this.send(CC.PatchHandling, slot, {
+      data: { data: { pp: 0x41, command: { ssc: 0x09, data: { slot } } } },
+    });
+  }
+
+  /**
+   * Collects a patch dump and returns its reassembled bitstream.
+   *
+   * A dump arrives as a run of packets whose command code carries first/last
+   * flags in its low two bits (`0x1c`-`0x1f`). Their payloads concatenate, seven
+   * bits per byte, into the bitstream that `patch.pdl2` describes.
+   */
+  receivePatchDump(timeoutMs = 5000): Promise<Uint8Array> {
+    return new Promise((resolve, reject) => {
+      const payloads: Uint8Array[] = [];
+      let started = false;
+
+      const finish = (error?: Error) => {
+        clearTimeout(timer);
+        dispose();
+        if (error) return reject(error);
+        const total = payloads.reduce((n, p) => n + p.length, 0);
+        const joined = new Uint8Array(total);
+        let offset = 0;
+        for (const part of payloads) {
+          joined.set(part, offset);
+          offset += part.length;
+        }
+        resolve(unpack7Bit(joined));
+      };
+
+      const timer = setTimeout(
+        () =>
+          finish(
+            new Error(
+              started
+                ? `patch dump stopped after ${payloads.length} packets without a final one`
+                : `timed out after ${timeoutMs}ms waiting for a patch dump`,
+            ),
+          ),
+        timeoutMs,
+      );
+
+      const dispose = this.transport.addListener((raw) => {
+        const cc = commandCodeOf(raw);
+        if (cc < CC.PatchPacketBase || cc > CC.PatchPacketBase + 3) return;
+
+        const isFirst = (cc & 1) === 1;
+        const isLast = ((cc >> 1) & 1) === 1;
+
+        if (isFirst) {
+          payloads.length = 0;
+          started = true;
+        }
+        if (!started) return; // Ignore a run we joined halfway through.
+
+        // Payload sits between the command/pid byte and the checksum.
+        payloads.push(raw.subarray(5, raw.length - 2));
+        if (isLast) finish();
+      });
+    });
+  }
+
+  /** Loads a stored patch into a slot and returns its dumped bitstream. */
+  async loadAndFetchPatch(
+    slot: number,
+    bank: number,
+    position: number,
+    timeoutMs = 5000,
+  ): Promise<Uint8Array> {
+    this.loadPatch(slot, bank, position);
+    // Give the device a moment to make the patch current before asking for it.
+    await new Promise((r) => setTimeout(r, 150));
+    const dump = this.receivePatchDump(timeoutMs);
+    dump.catch(() => {});
+    this.requestPatch(slot);
+    return dump;
   }
 
   /** Resolves on the next message with the given id, or rejects on timeout. */

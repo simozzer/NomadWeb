@@ -169,3 +169,16 @@ label.inline { flex-direction: row; align-items: center; gap: 5px; }
 .patch-row:hover { background: #1c2026; }
 .patch-pos { color: var(--ink-dim); font: 11px/1.5 ui-monospace, Consolas, monospace; }
 .patch-row--empty { opacity: .45; }
+
+.patch-row {
+  width: 100%;
+  text-align: left;
+  border: 1px solid transparent;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+}
+
+.patch-row:disabled { cursor: default; }
+.patch-row:not(:disabled):hover { border-color: var(--accent); }
+.patch-row--active { border-color: var(--accent); background: #2a2417; }

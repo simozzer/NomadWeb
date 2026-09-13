@@ -1,6 +1,12 @@
-import { parseModuleCatalogue, type ModuleDef, type ParameterDef } from './model/modules.ts';
+import {
+  parseModuleCatalogue,
+  controlParameters,
+  type ModuleDef,
+  type ParameterDef,
+} from './model/modules.ts';
 import { parseTheme, type Theme } from './model/theme.ts';
 import { FormatterTable } from './model/formatters.ts';
+import { PatchReader, type Patch, type PatchModule } from './model/patch.ts';
 import { ModuleView } from './ui/moduleView.ts';
 import { WebMidiTransport, MidiUnavailableError } from './midi/webmidi.ts';
 import { NordModular, CC, MAX_BANKS, type PatchListEntry } from './midi/nord.ts';
@@ -58,16 +64,18 @@ async function fetchText(url: string): Promise<string> {
 
 async function main(): Promise<void> {
   // ---- data ----
-  const [modulesXml, themeXml, nmformatSrc, midiGrammar] = await Promise.all([
+  const [modulesXml, themeXml, nmformatSrc, midiGrammar, patchGrammar] = await Promise.all([
     fetchText('/data/modules.xml'),
     fetchText('/data/classic-theme.xml'),
     fetchText('/data/nmformat.js'),
     fetchText('/data/midi.pdl2'),
+    fetchText('/data/patch.pdl2'),
   ]);
 
   const catalogue = parseModuleCatalogue(modulesXml);
   const theme: Theme = parseTheme(themeXml);
   const formatters = new FormatterTable(nmformatSrc);
+  const patchReader = new PatchReader(patchGrammar);
 
   log('info', `${catalogue.modules.size} modules, ${theme.modules.size} themed layouts`);
 
@@ -323,14 +331,19 @@ async function main(): Promise<void> {
       const table = document.createElement('div');
       table.className = 'patch-rows';
       for (const entry of byBank.get(bank)!.sort((a, b) => a.position - b.position)) {
-        const row = document.createElement('div');
+        const row = document.createElement('button');
+        row.type = 'button';
         row.className = 'patch-row' + (entry.empty ? ' patch-row--empty' : '');
+        row.disabled = entry.empty || !entry.name;
         const pos = document.createElement('span');
         pos.className = 'patch-pos';
         pos.textContent = String(entry.position + 1).padStart(2, '0');
         const name = document.createElement('span');
         name.textContent = entry.empty ? '—' : entry.name || '(unnamed)';
         row.append(pos, name);
+        if (!row.disabled) {
+          row.addEventListener('click', () => void selectPatch(entry, row));
+        }
         table.appendChild(row);
       }
       group.appendChild(table);
@@ -344,6 +357,126 @@ async function main(): Promise<void> {
   }
 
   hideEmpty.addEventListener('change', renderPatches);
+
+  const slotSelect = $<HTMLSelectElement>('target-slot');
+  const loadedPanel = $('current-patch');
+  const loadedModules = $('loaded-modules');
+  const loadedHint = $('loaded-hint');
+  let loading = false;
+
+  /** Renders a patch's modules, with each module's stored values applied. */
+  function renderLoadedPatch(patch: Patch): void {
+    loadedModules.replaceChildren();
+
+    // Parameters are stored positionally, in the order modules.xml declares
+    // that module's controls.
+    const valuesFor = (module: PatchModule): number[] => {
+      const dump = patch.parameters.find((p) => p.area === module.area);
+      return dump?.byModule.get(module.index) ?? [];
+    };
+
+    let unrendered = 0;
+    for (const module of patch.modules) {
+      const def = catalogue.modules.get(module.type);
+      const moduleTheme = def && theme.modules.get(def.componentId);
+      if (!def || !moduleTheme) { unrendered++; continue; }
+
+      const card = document.createElement('div');
+      card.className = 'module-card';
+
+      const header = document.createElement('header');
+      const label = document.createElement('span');
+      label.textContent = module.name || def.name;
+      const meta = document.createElement('span');
+      meta.textContent = `${module.area} #${module.index}`;
+      header.append(label, meta);
+      card.appendChild(header);
+
+      const view = new ModuleView({
+        def,
+        theme: moduleTheme,
+        imageBase: '/data/theme-images',
+        format: (parameter, value) => formatters.format(parameter.formatter, value),
+        onParameterChange: (parameter, value) =>
+          sendParameterChange(module, parameter, value),
+      });
+
+      const stored = valuesFor(module);
+      controlParameters(def).forEach((parameter, i) => {
+        if (i < stored.length) view.setValue(parameter.componentId, stored[i]);
+      });
+
+      card.appendChild(view.element);
+      loadedModules.appendChild(card);
+    }
+
+    const areas = new Set(patch.modules.map((m) => m.area));
+    $('loaded-summary').textContent =
+      `${patch.modules.length} modules, ${patch.cables.length} cables` +
+      (areas.size > 1 ? ' (voice + common)' : '');
+    loadedHint.textContent = unrendered
+      ? `${unrendered} module(s) have no themed layout and are not drawn.`
+      : '';
+    loadedPanel.hidden = false;
+  }
+
+  /** Sends a live parameter edit for a module that exists in the loaded patch. */
+  function sendParameterChange(
+    module: PatchModule,
+    parameter: ParameterDef,
+    value: number,
+  ): void {
+    const slot = Number(slotSelect.value);
+    const shown = formatters.format(parameter.formatter, value);
+    try {
+      const message = nord.send(CC.Parameter, slot, {
+        data: {
+          pid: 0,
+          sc: 0x40,
+          data: {
+            section: module.area === 'common' ? 1 : 0,
+            module: module.index,
+            parameter: parameter.index,
+            value,
+          },
+        },
+      });
+      log('out', `#${module.index} ${parameter.name} = ${value} (${shown})  ${formatSysex(message)}`);
+    } catch (error) {
+      log('err', (error as Error).message);
+    }
+  }
+
+  async function selectPatch(entry: PatchListEntry, row: HTMLElement): Promise<void> {
+    if (loading) return;
+    loading = true;
+
+    for (const other of patchListEl.querySelectorAll('.patch-row--active')) {
+      other.classList.remove('patch-row--active');
+    }
+    row.classList.add('patch-row--active');
+
+    const slot = Number(slotSelect.value);
+    const slotName = slotSelect.selectedOptions[0]?.textContent ?? `slot ${slot}`;
+    patchHint.textContent = `Loading "${entry.name}" into ${slotName}…`;
+
+    try {
+      const bitstream = await nord.loadAndFetchPatch(slot, entry.bank, entry.position);
+      log('info', `patch dump: ${bitstream.length} bytes of bitstream`);
+
+      const patch = patchReader.read(bitstream);
+      renderLoadedPatch(patch);
+      patchHint.textContent =
+        `Loaded "${patch.name || entry.name}" into ${slotName} — ` +
+        `${patch.modules.length} modules, ${patch.cables.length} cables.`;
+    } catch (error) {
+      patchHint.textContent =
+        `Loaded into ${slotName}, but reading it back failed: ${(error as Error).message}`;
+      log('err', (error as Error).message);
+    } finally {
+      loading = false;
+    }
+  }
 
   cancelButton.addEventListener('click', () => {
     cancelled = true;
