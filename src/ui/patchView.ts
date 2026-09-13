@@ -156,8 +156,38 @@ export class PatchView {
     };
   }
 
-  /** Finds the connector nearest a canvas point, within `radius`. */
-  private connectorAt(x: number, y: number, radius = 11): ConnectorRef | null {
+  /**
+   * Resolves the connector a pointer event actually landed on.
+   *
+   * Exact beats approximate: the element under the pointer is unambiguous and
+   * respects what is drawn on top, whereas a nearest-centre search can pick a
+   * neighbour when the press was in the gap between two jacks.
+   */
+  private connectorFromTarget(target: EventTarget | null): ConnectorRef | null {
+    const connector = ancestorWithClass(target, 'connector');
+    if (!connector) return null;
+
+    const moduleEl = ancestorWithClass(target, 'patch-module');
+    const moduleIndex = Number(moduleEl?.getAttribute('data-module-index'));
+    const connectorIndex = Number(connector.getAttribute('data-connector-index'));
+    if (!Number.isFinite(moduleIndex) || !Number.isFinite(connectorIndex)) return null;
+    if (!connector.hasAttribute('data-connector-index')) return null;
+
+    return {
+      moduleIndex,
+      connectorIndex,
+      isOutput: connector.getAttribute('data-connector-output') === '1' ? 1 : 0,
+    };
+  }
+
+  /**
+   * Finds the connector nearest a canvas point.
+   *
+   * `radius` is in screen pixels and converted to canvas units, so the snap
+   * feels the same at every zoom level rather than shrinking as you zoom out.
+   */
+  private connectorAt(x: number, y: number, screenRadius = 14): ConnectorRef | null {
+    const radius = screenRadius / this.view.scale;
     let best: ConnectorRef | null = null;
     let bestDistance = radius * radius;
 
@@ -178,6 +208,51 @@ export class PatchView {
       }
     }
     return best;
+  }
+
+  /** Exact hit first, falling back to a zoom-aware proximity snap. */
+  private resolveConnector(event: PointerEvent | MouseEvent): ConnectorRef | null {
+    const exact = this.connectorFromTarget(event.target);
+    if (exact) return exact;
+    const rect = this.element.getBoundingClientRect();
+    return this.connectorAt(
+      (event.clientX - rect.left - this.view.x) / this.view.scale,
+      (event.clientY - rect.top - this.view.y) / this.view.scale,
+    );
+  }
+
+  private sameConnector(a: ConnectorRef, b: ConnectorRef): boolean {
+    return a.moduleIndex === b.moduleIndex &&
+      a.connectorIndex === b.connectorIndex &&
+      a.isOutput === b.isOutput;
+  }
+
+  /**
+   * Whether a cable may join these two ends.
+   *
+   * The far end of a cable is always an input — the device stores it that way.
+   * The near end may be an output (the normal case) or another input, which is
+   * how the Nord chains a signal onward. Two outputs cannot be joined.
+   */
+  private canConnect(from: ConnectorRef, to: ConnectorRef): boolean {
+    if (this.sameConnector(from, to)) return false;
+    if (from.isOutput === 1 && to.isOutput === 1) return false;
+    // Something has to terminate at an input.
+    if (from.isOutput === 0 && to.isOutput === 0) return true;
+    return true;
+  }
+
+  /** Already-connected pairs should not be duplicated. */
+  private alreadyConnected(from: ConnectorRef, to: ConnectorRef): boolean {
+    const ends = (c: PatchCable) => [
+      { moduleIndex: c.sourceModule, connectorIndex: c.sourceConnector, isOutput: c.sourceIsOutput },
+      { moduleIndex: c.destModule, connectorIndex: c.destConnector, isOutput: 0 },
+    ];
+    return this.cables.some((cable) => {
+      const [a, b] = ends(cable);
+      return (this.sameConnector(a, from) && this.sameConnector(b, to)) ||
+        (this.sameConnector(a, to) && this.sameConnector(b, from));
+    });
   }
 
   /** Converts a pointer event to canvas coordinates. */
@@ -202,7 +277,7 @@ export class PatchView {
       const layout = def && this.options.theme.modules.get(def.componentId);
       if (!def || !layout) continue;
 
-      const group = el('g', { class: 'patch-module' });
+      const group = el('g', { class: 'patch-module', 'data-module-index': String(module.index) });
       const view = new ModuleView({
         def,
         theme: layout,
@@ -433,12 +508,7 @@ export class PatchView {
     // quicker than cutting each cable when unpicking a busy input.
     this.element.addEventListener('dblclick', (event: MouseEvent) => {
       if (isModuleControl(event.target)) return;
-      const rect = this.element.getBoundingClientRect();
-      const point = {
-        x: (event.clientX - rect.left - this.view.x) / this.view.scale,
-        y: (event.clientY - rect.top - this.view.y) / this.view.scale,
-      };
-      const connector = this.connectorAt(point.x, point.y);
+      const connector = this.resolveConnector(event);
       if (!connector) return;
       event.preventDefault();
       this.disconnectAt(connector);
@@ -456,7 +526,7 @@ export class PatchView {
 
       const point = this.toCanvas(event);
 
-      const connector = this.connectorAt(point.x, point.y);
+      const connector = this.resolveConnector(event);
       if (connector) return this.beginCableDrag(event, connector);
 
       const placed = this.moduleAt(point.x, point.y);
@@ -495,13 +565,36 @@ export class PatchView {
       fill: 'none', stroke: '#c8b072', 'stroke-width': 2,
       'stroke-dasharray': '5 4', 'stroke-linecap': 'round',
     });
-    this.overlay.appendChild(preview);
+    // A ring on the connector the cable would land on, so the target is never
+    // in doubt before releasing.
+    const marker = el('circle', {
+      r: 9, fill: 'none', stroke: '#c8b072', 'stroke-width': 2, visibility: 'hidden',
+    });
+    this.overlay.append(preview, marker);
+
+    const evaluate = (pointerEvent: PointerEvent) => {
+      const snap = this.resolveConnector(pointerEvent);
+      const valid = snap ? this.canConnect(from, snap) && !this.alreadyConnected(from, snap) : false;
+      return { snap, valid };
+    };
 
     const move = (moveEvent: PointerEvent) => {
-      const point = this.toCanvas(moveEvent);
-      const snap = this.connectorAt(point.x, point.y);
-      const end = snap ? this.connectorPoint(snap)! : point;
+      const { snap, valid } = evaluate(moveEvent);
+      const end = snap ? this.connectorPoint(snap)! : this.toCanvas(moveEvent);
       preview.setAttribute('d', this.cablePath(origin, end));
+
+      // Amber while free, green over a legal target, red over an illegal one.
+      const color = !snap ? '#c8b072' : valid ? '#7bbf6a' : '#d06a6a';
+      preview.setAttribute('stroke', color);
+      marker.setAttribute('stroke', color);
+
+      if (snap) {
+        marker.setAttribute('cx', String(end.x));
+        marker.setAttribute('cy', String(end.y));
+        marker.setAttribute('visibility', 'visible');
+      } else {
+        marker.setAttribute('visibility', 'hidden');
+      }
     };
 
     const up = (upEvent: PointerEvent) => {
@@ -509,14 +602,10 @@ export class PatchView {
       this.element.removeEventListener('pointermove', move);
       this.element.removeEventListener('pointerup', up);
       preview.remove();
+      marker.remove();
 
-      const point = this.toCanvas(upEvent);
-      const to = this.connectorAt(point.x, point.y);
-      if (!to) return;
-      if (to.moduleIndex === from.moduleIndex && to.connectorIndex === from.connectorIndex &&
-          to.isOutput === from.isOutput) {
-        return;
-      }
+      const { snap: to, valid } = evaluate(upEvent);
+      if (!to || !valid) return;
 
       // Colour follows the signal type of the source connector.
       const placed = this.placed.get(from.moduleIndex);

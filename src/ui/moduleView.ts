@@ -131,7 +131,17 @@ export class ModuleView {
   private renderConnector(widget: Widget): void {
     const size = widget.size ?? 13;
     const color = SIGNAL_COLORS[widget.className ?? 'cNONE'] ?? '#FFF';
+    const def = this.options.def.connectors.find((c) => c.componentId === widget.connectorId);
+
     const group = el('g', { class: 'connector', 'data-connector': widget.connectorId ?? '' });
+    // The patch format addresses a connector by index plus direction, so carry
+    // both on the element. That lets a press be resolved by what it actually
+    // hit rather than by distance to the nearest centre.
+    if (def) {
+      group.setAttribute('data-connector-index', String(def.index));
+      group.setAttribute('data-connector-output', def.direction === 'output' ? '1' : '0');
+      group.setAttribute('data-signal', def.signal);
+    }
 
     group.appendChild(
       el('rect', {
@@ -145,6 +155,13 @@ export class ModuleView {
         fill: color,
       }),
     );
+    // An invisible, generously sized target: the drawn jack is only 13px, which
+    // is a hard thing to hit, especially zoomed out.
+    const target = el('rect', {
+      x: widget.x - 3, y: widget.y - 3, width: size + 6, height: size + 6,
+      fill: 'transparent', class: 'connector-target',
+    });
+    group.appendChild(target);
 
     if (widget.alt) {
       const label = el('title');
