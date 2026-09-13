@@ -3,6 +3,14 @@ import type { ModuleTheme, Widget } from '../model/theme.ts';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 
+/**
+ * Baseline offset for the theme's 9px panel text.
+ *
+ * Theme coordinates are Swing bounds (top-left); SVG places text by its
+ * baseline, so everything drawn as text needs the ascent added.
+ */
+const LABEL_ASCENT = 7;
+
 /** Signal colours, taken from the stylesheet at the head of classic-theme.xml. */
 const SIGNAL_COLORS: Record<string, string> = {
   cAUDIO: '#CB4F4F',
@@ -168,7 +176,18 @@ export class ModuleView {
   }
 
   private renderLabel(widget: Widget): void {
-    const text = el('text', { x: widget.x, y: widget.y, class: 'module-label' });
+    // Theme coordinates are Swing component bounds — the top-left corner — but
+    // SVG positions text by its baseline. Without the ascent the label rides up
+    // into whatever sits above it: "Coarse" is at y=4 on a panel it would
+    // otherwise overhang, and "Slv" at y=39 lands on the display at 24-40.
+    // A few labels sit close enough to the bottom edge that the ascent would
+    // push them off the panel (PolyAreaIn's "R" is at y=26 on a 30px panel), so
+    // the baseline is kept inside.
+    const text = el('text', {
+      x: widget.x,
+      y: Math.min(widget.y + LABEL_ASCENT, this.options.theme.height - 2),
+      class: 'module-label',
+    });
     text.textContent = widget.text ?? '';
     this.element.appendChild(text);
   }
@@ -177,8 +196,12 @@ export class ModuleView {
     const parameter = this.parameterFor(widget.parameterId);
     const size = widget.size ?? 21;
     const radius = size / 2;
+    // The theme's own transform (module2svg.xsl) places a knob at
+    // cx = x + radius, cy = y + radius. This previously subtracted size/2 from
+    // cy, which is identically zero, so every knob sat half its height too high
+    // and collided with the label above it.
     const cx = widget.x + radius;
-    const cy = widget.y + radius - size / 2;
+    const cy = widget.y + radius;
 
     const group = el('g', { class: 'knob' });
     group.appendChild(el('circle', { cx, cy, r: radius, fill: '#989898', stroke: 'rgba(0,0,0,.45)' }));
@@ -217,9 +240,12 @@ export class ModuleView {
     const height = widget.height ?? 16;
     const group = el('g', { class: 'button' });
 
+    // Inset by 1px, as the theme's own transform does, so adjacent widgets
+    // do not share an edge.
     const body = el('rect', {
-      x: widget.x, y: widget.y, width, height, rx: 2,
-      fill: '#7c7c7c', stroke: 'rgba(0,0,0,.5)',
+      x: widget.x, y: widget.y,
+      width: Math.max(0, width - 1), height: Math.max(0, height - 1),
+      rx: 2, fill: '#7c7c7c', stroke: 'rgba(0,0,0,.5)',
     });
     group.appendChild(body);
 
@@ -311,14 +337,16 @@ export class ModuleView {
     const height = widget.height ?? 16;
     const group = el('g', { class: 'text-display' });
 
+    // The theme insets a display by 2px, which is what keeps neighbouring
+    // widgets from touching it.
     group.appendChild(
       el('rect', {
-        x: widget.x, y: widget.y, width, height, rx: 2,
-        fill: '#392F7D', stroke: 'rgba(0,0,0,.5)',
+        x: widget.x, y: widget.y, width: Math.max(0, width - 2), height: Math.max(0, height - 2),
+        rx: 2, fill: '#392F7D', stroke: 'rgba(0,0,0,.5)',
       }),
     );
     const text = el('text', {
-      x: widget.x + width / 2, y: widget.y + height / 2 + 3,
+      x: widget.x + (width - 2) / 2, y: widget.y + (height - 2) / 2 + 3,
       class: 'display-text', 'text-anchor': 'middle',
     });
     group.appendChild(text);

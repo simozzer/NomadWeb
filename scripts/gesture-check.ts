@@ -155,7 +155,55 @@ process.stdout.write('\nModule layout never overlaps\n');
     columnZero.map((b) => `${b.y}+${b.h}`).join(' '));
 }
 
-process.stdout.write(`
-${pass} ok, ${fail} failed
-`);
+process.stdout.write('\nPanel widgets sit inside their panel\n');
+{
+  // Theme coordinates are Swing bounds; a widget drawn with the wrong origin
+  // rides outside the panel or onto its neighbour. Check every themed module.
+  let outside = 0;
+  let knobsChecked = 0;
+  const offenders: string[] = [];
+
+  for (const def of catalogue.modules.values()) {
+    const layout = theme.modules.get(def.componentId);
+    if (!layout) continue;
+
+    const view = new ModuleView({ def, theme: layout, imageBase: '/data/theme-images' });
+
+    for (const circle of Array.from(view.element.querySelectorAll('g.knob circle'))) {
+      knobsChecked++;
+      const cx = Number(circle.getAttribute('cx'));
+      const cy = Number(circle.getAttribute('cy'));
+      const r = Number(circle.getAttribute('r'));
+      if (cx - r < -1 || cy - r < -1 || cx + r > layout.width + 1 || cy + r > layout.height + 1) {
+        outside++;
+        if (offenders.length < 3) offenders.push(`${def.name} knob at ${cx},${cy}`);
+      }
+    }
+
+    for (const text of Array.from(view.element.querySelectorAll('text.module-label'))) {
+      const y = Number(text.getAttribute('y'));
+      // A baseline above the ascent would mean the glyphs start off-panel.
+      if (y < 6 || y > layout.height + 2) {
+        outside++;
+        if (offenders.length < 3) offenders.push(`${def.name} label baseline ${y}`);
+      }
+    }
+  }
+
+  check('every knob is fully inside its panel', outside === 0,
+    `${knobsChecked} knobs checked` + (offenders.length ? ` · ${offenders.join('; ')}` : ''));
+
+  // The specific regression: a knob's centre must be x+r, y+r, not y.
+  const oscA = [...catalogue.modules.values()].find((m) => m.name === 'OscA')!;
+  const view = new ModuleView({
+    def: oscA, theme: theme.modules.get(oscA.componentId)!, imageBase: '/data/theme-images',
+  });
+  const first = view.element.querySelector('g.knob circle')!;
+  // "freq coarse" is at (64,17) size 29, so its centre is (78.5, 31.5).
+  check('knob centre includes the radius on both axes',
+    Number(first.getAttribute('cx')) === 78.5 && Number(first.getAttribute('cy')) === 31.5,
+    `${first.getAttribute('cx')},${first.getAttribute('cy')}`);
+}
+
+process.stdout.write(`\n${pass} ok, ${fail} failed\n`);
 process.exit(fail === 0 ? 0 : 1);
