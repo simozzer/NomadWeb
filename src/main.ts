@@ -489,7 +489,9 @@ async function main(): Promise<void> {
     loadedPanel.hidden = false;
 
     try {
-      const report = await nord.loadAndFetchPatch(slot, entry.bank, entry.position);
+      const report = await nord.loadAndFetchPatch(slot, entry.bank, entry.position, {
+        usePartRequests: $<HTMLInputElement>('use-parts').checked,
+      });
       log(
         'info',
         `patch fetch via ${report.method}: ${report.packets} packets, ` +

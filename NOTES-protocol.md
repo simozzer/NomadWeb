@@ -209,3 +209,53 @@ The sub-commands are the `GetPatchPart` cases (`0x61`, `0x63`, `0x66`, `0x68`) a
 `PatchModification` — which means they carry a pid, and the poly/common split is
 the `Extra` payload byte, paired with both 0 and 1 in
 `GetPatchMessage.getBitStream`.
+
+## Reading a patch, part by part — and a warning
+
+`GetPatchMessage.forAllParts` builds one message per entry of its `PatchPart`
+enum. It only *builds* them: the original feeds the array through
+`AbstractNmProtocol`'s queue one at a time.
+
+The enum itself carries no codes. The mapping lives in two places: the ordinal
+map in `GetPatchMessage$1.$SwitchMap`, and the `tableswitch` in
+`GetPatchMessage.getBitStream` that appends the bytes for each case.
+
+| Part | sc | payload |
+|---|---|---|
+| HEADER | `0x20` | `0x28` |
+| POLY_MODULE | `0x4b` | 1 |
+| COMMON_MODULE | `0x4b` | 0 |
+| POLY_CABLE | `0x53` | 1 |
+| COMMON_CABLE | `0x53` | 0 |
+| POLY_PARAMETER | `0x4c` | 1 |
+| COMMON_PARAMETER | `0x4c` | 0 |
+| MORPHMAP | `0x66` | — |
+| KNOBMAP | `0x63` | — |
+| CONTROLMAP | `0x61` | — |
+| POLY_NAMEDUMP | `0x4e` | 1 |
+| COMMON_NAMEDUMP | `0x4e` | 0 |
+| NOTE | `0x68` | — |
+
+Poly is payload **1** and common is **0** — the opposite of the `section` bit
+elsewhere in the patch format, where 0 is the voice area. HEADER's second byte is
+`0x28`, not an area selector.
+
+### What went wrong the first time
+
+An earlier attempt silenced the synth about a second after loading a patch. The
+device answered with an `error` and the slot's pid advanced, meaning the patch
+had been modified rather than read. Two causes:
+
+1. **HEADER was sent with payload 0 instead of `0x28`.** The codes had been read
+   off a linear scan for `bipush`/`sipush` bytes, which cannot tell an
+   instruction from an operand — so roughly half of what it printed was operand
+   noise. `scripts/disasm.ts` now walks instructions properly, including the
+   variable-length `tableswitch`, `lookupswitch` and `wide` forms.
+2. **All thirteen were sent in one burst.** They are paced now.
+
+These sub-commands live in the same `PatchModification` switch as
+`ModuleDeletion` (`0x32`), `CableDelete` (`0x51`) and `SetPatchTitle` (`0x27`).
+A wrong code, or a right code with a wrong payload layout, lands on a
+destructive command. Anything derived from bytecode should come from
+`disasm.ts`, never from a byte scan, and should be checked against
+`parts-check.ts` before it reaches hardware.

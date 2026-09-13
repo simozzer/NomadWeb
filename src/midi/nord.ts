@@ -173,6 +173,33 @@ export interface PatchDumpReport {
 }
 
 
+/**
+ * The thirteen patch parts, in the order `GetPatchMessage.orderedParts` holds.
+ *
+ * Read off a real disassembly: `GetPatchMessage$1.$SwitchMap` gives each enum
+ * constant's switch ordinal, and the `tableswitch` in
+ * `GetPatchMessage.getBitStream` gives the bytes each case appends — a
+ * sub-command, plus a payload for the parts that exist per patch area.
+ *
+ * Note that poly is payload 1 and common is payload 0, and that HEADER's second
+ * byte is 0x28, not an area selector.
+ */
+const PATCH_PARTS: Array<{ name: string; sc: number; payload?: number }> = [
+  { name: 'HEADER', sc: 0x20, payload: 0x28 },
+  { name: 'POLY_MODULE', sc: 0x4b, payload: 1 },
+  { name: 'COMMON_MODULE', sc: 0x4b, payload: 0 },
+  { name: 'POLY_CABLE', sc: 0x53, payload: 1 },
+  { name: 'COMMON_CABLE', sc: 0x53, payload: 0 },
+  { name: 'POLY_PARAMETER', sc: 0x4c, payload: 1 },
+  { name: 'COMMON_PARAMETER', sc: 0x4c, payload: 0 },
+  { name: 'MORPHMAP', sc: 0x66 },
+  { name: 'KNOBMAP', sc: 0x63 },
+  { name: 'CONTROLMAP', sc: 0x61 },
+  { name: 'POLY_NAMEDUMP', sc: 0x4e, payload: 1 },
+  { name: 'COMMON_NAMEDUMP', sc: 0x4e, payload: 0 },
+  { name: 'NOTE', sc: 0x68 },
+];
+
 export type MessageListener = (message: DecodeResult, raw: Uint8Array) => void;
 
 export interface NordLogEntry {
@@ -569,28 +596,42 @@ export class NordModular {
   }
 
   /**
-   * DISABLED — do not re-enable without confirmed sub-command codes.
+   * Asks for a patch one part at a time.
    *
-   * The idea was that `GetPatchMessage.forAllParts` requests a patch one part at
-   * a time, so this sent the `GetPatchPart` / `GetPatchPartExtra` codes from the
-   * `PatchModification` switch table.
+   * Off by default — an earlier version of this silenced the synth. Two things
+   * were wrong then, both now fixed:
    *
-   * Against real hardware that silenced the synth about a second after a load:
-   * the device answered with an `error`, and the slot's pid advanced by one,
-   * which means the patch was *modified*, not read. These codes share a switch
-   * with genuinely destructive commands — `ModuleDeletion` (0x32),
-   * `CableDelete` (0x51), `SetPatchTitle` (0x27) — so sending a code whose
-   * layout is wrong can damage the loaded patch.
+   * 1. `HEADER` was sent with a payload of 0 instead of 0x28. The codes came
+   *    from a linear opcode scan that cannot tell an instruction from an
+   *    operand; `PATCH_PARTS` is now read off a proper disassembly of the
+   *    `tableswitch` in `GetPatchMessage.getBitStream` together with the
+   *    ordinal map in `GetPatchMessage$1`.
+   * 2. All thirteen went out in one burst. `forAllParts` only *builds* the
+   *    array; the original feeds it through `AbstractNmProtocol`'s queue one at
+   *    a time. They are paced here, with a gap between each.
    *
-   * The codes were read off a naive linear opcode scan of `getBitStream`, which
-   * cannot tell an instruction from an operand and so is not evidence. Sending
-   * speculative modification commands to hardware was the wrong move regardless.
+   * These share a switch with destructive commands (`ModuleDeletion` 0x32,
+   * `CableDelete` 0x51), so treat any change here as touching live hardware.
    */
-  requestPatchParts(_slot: number): number {
-    throw new Error(
-      'part-by-part patch fetch is disabled: the sub-command codes are unverified ' +
-        'and modified the patch on the device',
-    );
+  async requestPatchParts(
+    slot: number,
+    options: { gapMs?: number; onSent?: (part: string, index: number) => void } = {},
+  ): Promise<number> {
+    const gap = options.gapMs ?? 120;
+    let sent = 0;
+
+    for (const part of PATCH_PARTS) {
+      this.modifyPatch(
+        slot,
+        part.sc,
+        part.payload === undefined ? {} : { payload: part.payload },
+      );
+      sent++;
+      options.onSent?.(part.name, sent);
+      await new Promise((r) => setTimeout(r, gap));
+    }
+
+    return sent;
   }
 
   /**
@@ -603,7 +644,11 @@ export class NordModular {
     slot: number,
     bank: number,
     position: number,
-    windowMs = 2500,
+    { windowMs = 2500, usePartRequests = false }: {
+      windowMs?: number;
+      /** Allow the part-by-part fallback, which sends modification commands. */
+      usePartRequests?: boolean;
+    } = {},
   ): Promise<PatchDumpReport> {
     this.loadPatch(slot, bank, position);
 
@@ -612,11 +657,24 @@ export class NordModular {
     // rather than guessing at a fixed delay.
     await this.waitForFreshPid(slot, 1200);
 
-    // Only the read-only whole-patch request is sent. The part-by-part path is
-    // disabled — see requestPatchParts.
     const whole = this.collectPatchPackets(windowMs);
     this.requestPatch(slot);
-    return { ...(await whole.done), method: 'RequestPatch' };
+    const first = await whole.done;
+    if (first.payloadBytes > 0 || !usePartRequests) {
+      return { ...first, method: 'RequestPatch' };
+    }
+
+    // Opt-in only: these are modification-family commands, so the caller has to
+    // ask for them explicitly. See requestPatchParts.
+    const parts = this.collectPatchPackets(windowMs + PATCH_PARTS.length * 150);
+    const sent = await this.requestPatchParts(slot);
+    parts.stop();
+    const second = await parts.done;
+    return {
+      ...second,
+      method: `GetPatchPart x${sent}`,
+      otherMessages: [...first.otherMessages, ...second.otherMessages],
+    };
   }
 
   /**
