@@ -119,6 +119,18 @@ export class BitWriter {
     if (overshoot !== 0) this.write(0, alignment - overshoot);
   }
 
+  /** Discard everything written at or after `bitPos`, for encoder backtracking. */
+  truncate(bitPos: number): void {
+    this.pos = bitPos;
+    const wholeBytes = Math.ceil(bitPos / 8);
+    this.chunks.length = wholeBytes;
+    // Clear any bits past the cut inside the final partial byte.
+    const overhang = bitPos % 8;
+    if (overhang !== 0 && this.chunks.length > 0) {
+      this.chunks[this.chunks.length - 1] &= ~((1 << (8 - overhang)) - 1);
+    }
+  }
+
   /** Overwrite an already-written field, for back-patching checksums. */
   patch(bitPos: number, value: number, width: number): void {
     const saved = this.pos;

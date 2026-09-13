@@ -53,6 +53,24 @@
         <dl class="identity" id="identity" hidden></dl>
       </section>
 
+      <section class="panel" id="patches">
+        <h2>Patches <span class="count" id="patch-count"></span></h2>
+        <div class="row">
+          <label>Bank
+            <select id="patch-bank">
+              <option value="all">All banks</option>
+            </select>
+          </label>
+          <button id="fetch-patches" type="button" disabled>Fetch patch list</button>
+          <button id="cancel-patches" type="button" hidden>Cancel</button>
+          <label class="inline">
+            <input type="checkbox" id="hide-empty" checked /> hide empty slots
+          </label>
+        </div>
+        <p class="hint" id="patch-hint">Identify the device first.</p>
+        <div id="patch-list" class="patch-list"></div>
+      </section>
+
       <section class="panel" id="browser">
         <h2>Modules <span class="count" id="module-count"></span></h2>
         <div class="row">

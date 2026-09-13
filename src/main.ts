@@ -3,7 +3,7 @@ import { parseTheme, type Theme } from './model/theme.ts';
 import { FormatterTable } from './model/formatters.ts';
 import { ModuleView } from './ui/moduleView.ts';
 import { WebMidiTransport, MidiUnavailableError } from './midi/webmidi.ts';
-import { NordModular, CC } from './midi/nord.ts';
+import { NordModular, CC, MAX_BANKS, type PatchListEntry } from './midi/nord.ts';
 import { formatSysex } from './midi/framing.ts';
 
 const $ = <T extends HTMLElement>(id: string): T => {
@@ -181,6 +181,10 @@ async function main(): Promise<void> {
 
       setStatus(identity.deviceName, 'ok');
       log('info', `identified ${identity.deviceName}, OS ${identity.version}`);
+
+      $<HTMLButtonElement>('fetch-patches').disabled = false;
+      $('patch-hint').textContent =
+        'Ready. Reading all banks takes a moment; a single bank is quicker.';
     } catch (error) {
       connected = false;
       setStatus('identify failed', 'bad');
@@ -213,6 +217,113 @@ async function main(): Promise<void> {
     } catch (error) {
       setStatus('could not open ports', 'bad');
       log('err', (error as Error).message);
+    }
+  });
+
+  // ---- patch list ----
+  const bankSelect = $<HTMLSelectElement>('patch-bank');
+  const fetchButton = $<HTMLButtonElement>('fetch-patches');
+  const cancelButton = $<HTMLButtonElement>('cancel-patches');
+  const hideEmpty = $<HTMLInputElement>('hide-empty');
+  const patchListEl = $('patch-list');
+  const patchHint = $('patch-hint');
+
+  for (let bank = 0; bank < MAX_BANKS; bank++) {
+    const option = document.createElement('option');
+    option.value = String(bank);
+    option.textContent = `Bank ${bank + 1}`;
+    bankSelect.appendChild(option);
+  }
+
+  let patches: PatchListEntry[] = [];
+  let cancelled = false;
+
+  function renderPatches(): void {
+    const shown = hideEmpty.checked
+      ? patches.filter((p) => !p.empty && p.name)
+      : patches;
+
+    patchListEl.replaceChildren();
+
+    const byBank = new Map<number, PatchListEntry[]>();
+    for (const entry of shown) {
+      const list = byBank.get(entry.bank) ?? [];
+      list.push(entry);
+      byBank.set(entry.bank, list);
+    }
+
+    for (const bank of Array.from(byBank.keys()).sort((a, b) => a - b)) {
+      const group = document.createElement('div');
+      group.className = 'patch-bank';
+
+      const heading = document.createElement('h3');
+      heading.textContent = `Bank ${bank + 1}`;
+      group.appendChild(heading);
+
+      const table = document.createElement('div');
+      table.className = 'patch-rows';
+      for (const entry of byBank.get(bank)!.sort((a, b) => a.position - b.position)) {
+        const row = document.createElement('div');
+        row.className = 'patch-row' + (entry.empty ? ' patch-row--empty' : '');
+        const pos = document.createElement('span');
+        pos.className = 'patch-pos';
+        pos.textContent = String(entry.position + 1).padStart(2, '0');
+        const name = document.createElement('span');
+        name.textContent = entry.empty ? '—' : entry.name || '(unnamed)';
+        row.append(pos, name);
+        table.appendChild(row);
+      }
+      group.appendChild(table);
+      patchListEl.appendChild(group);
+    }
+
+    const named = patches.filter((p) => !p.empty && p.name).length;
+    $('patch-count').textContent = patches.length
+      ? `${named} named, ${patches.length} slots seen`
+      : '';
+  }
+
+  hideEmpty.addEventListener('change', renderPatches);
+
+  cancelButton.addEventListener('click', () => {
+    cancelled = true;
+    patchHint.textContent = 'Cancelled.';
+  });
+
+  fetchButton.addEventListener('click', async () => {
+    patches = [];
+    cancelled = false;
+    fetchButton.disabled = true;
+    cancelButton.hidden = false;
+    renderPatches();
+
+    const selected = bankSelect.value;
+    const banks = selected === 'all'
+      ? Array.from({ length: MAX_BANKS }, (_, i) => i)
+      : [Number(selected)];
+
+    patchHint.textContent = `Reading ${banks.length === 1 ? `bank ${banks[0] + 1}` : 'all banks'}…`;
+
+    try {
+      patches = await nord.fetchPatchList({
+        banks,
+        timeoutMs: 1500,
+        shouldStop: () => cancelled,
+        onProgress: (entries) => {
+          patches = entries;
+          renderPatches();
+        },
+      });
+      renderPatches();
+      patchHint.textContent = patches.length
+        ? `Read ${patches.length} slots.`
+        : 'The device returned no patch list. Check the MIDI monitor for what came back.';
+    } catch (error) {
+      patchHint.textContent = `Patch list failed: ${(error as Error).message}`;
+      log('err', (error as Error).message);
+    } finally {
+      fetchButton.disabled = false;
+      cancelButton.hidden = true;
     }
   });
 

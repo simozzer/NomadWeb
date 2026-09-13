@@ -58,3 +58,54 @@ Resolving it needs a device: set a patch name with a known first character and r
 Low stakes either way. `UnknownNMInfo` is a message the original author could not identify
 (every field is named `unknownN`), and the patch name is also carried by `SetPatchTitle`
 (`0x27`), which is unambiguous. Left as-is, matching the grammar.
+
+## Patch list
+
+Command codes taken from `GetPatchListMessage.<init>` in `jnmprotocol2.jar`, whose
+bytecode pushes `0x17`, `0x41`, `0x14` in order:
+
+| Field | Value | Meaning |
+|---|---|---|
+| `cc` | `0x17` | PatchHandling |
+| `pp` | `0x41` | PatchManagerCommand |
+| `ssc` | `0x14` | GetPatchList |
+
+A request is ten bytes: `F0 33 5C 06 41 14 <bank> <position> <checksum> F7`, where `0x5C`
+is `cc=0x17, slot=0` packed as `0:1 cc:5 slot:2`. Bounds come from the same class: nine
+banks, positions 0-99.
+
+The reply is an ACK (`cc=0x16`) of type `0x13`/`0x15` carrying a `PatchListResponse`.
+
+### Backtracking is required to parse it
+
+`PatchListResponse` ends `?StringList$data 0:1 endmarker:7`, and `StringList` recurses
+through `?StringList$next`. Because `String` is `16*chars:8/0`, an empty name matches zero
+bytes and is indistinguishable from the trailing endmarker — so a greedy optional swallows
+the endmarker *and* the checksum, and the packet never closes.
+
+The decoder therefore runs in continuation-passing style: an optional or alternative
+commits only once the rest of the packet has parsed, and is retried otherwise. Two guards
+keep that safe — an optional that consumes zero bits is skipped rather than recursed into,
+and a step ceiling turns a pathological packet into an error instead of a hang.
+
+This matters beyond the patch list: patch dumps use the same recursive-optional shape.
+
+### Cursor semantics (inferred — worth confirming against hardware)
+
+Entries are consecutive unless a `ListCmd` moves the cursor:
+
+| Code | Effect |
+|---|---|
+| `0x01` | set position explicitly |
+| `0x02` | slot is empty; cursor still advances |
+| `0x03` | jump to bank and position |
+| `0x05` | as `0x03`, after an overwrite |
+| absent | advance one position |
+
+The traversal path matches what `PatchListMessage` walks: `data:patchList:data`, then
+`cmd`/`code`, `nextposition:position`, `nextsection:section`, `name`, `next`.
+
+Only the `0x02` behaviour is a guess. The grammar gives `EmptyPosition` zero width, so
+nothing says whether the cursor advances; treating it as advancing is what keeps positions
+unique. If a real bank comes back with duplicated or shifted positions around empty slots,
+this is the line to change.

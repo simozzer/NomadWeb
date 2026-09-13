@@ -142,3 +142,30 @@ svg.module .knob:focus, svg.module .button:focus, svg.module .slider:focus { out
 .counter--zero strong { color: var(--bad); }
 
 label.inline { flex-direction: row; align-items: center; gap: 5px; }
+
+.patch-list { display: flex; flex-wrap: wrap; gap: 14px; max-height: 46vh; overflow: auto; }
+
+.patch-bank { min-width: 200px; flex: 1; }
+.patch-bank h3 {
+  margin: 0 0 5px;
+  font-size: 11px;
+  color: var(--accent);
+  text-transform: uppercase;
+  letter-spacing: .06em;
+}
+
+.patch-rows { display: grid; gap: 1px; }
+
+.patch-row {
+  display: grid;
+  grid-template-columns: 26px 1fr;
+  gap: 8px;
+  padding: 2px 6px;
+  border-radius: 3px;
+  background: #14161a;
+  font-size: 12px;
+}
+
+.patch-row:hover { background: #1c2026; }
+.patch-pos { color: var(--ink-dim); font: 11px/1.5 ui-monospace, Consolas, monospace; }
+.patch-row--empty { opacity: .45; }

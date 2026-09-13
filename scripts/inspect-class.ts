@@ -102,8 +102,11 @@ if (showCode) {
         const code = buf.subarray(p, p + codeLen);
         for (let c = 0; c < code.length; c++) {
           const op = code[c];
-          if (op === 0x10) { pushes.push(code[c + 1]); c += 1; }          // bipush
-          else if (op === 0x11) { pushes.push(code.readInt16BE(c + 1)); c += 2; } // sipush
+          // Operand-less scan: good enough to reveal literal values, though a
+          // wide operand could in principle be misread as an opcode.
+          if (op === 0x10 && c + 1 < code.length) { pushes.push(code[c + 1]); c += 1; }
+          else if (op === 0x11 && c + 2 < code.length) { pushes.push(code.readInt16BE(c + 1)); c += 2; }
+          else if (op >= 0x02 && op <= 0x08) pushes.push(op - 0x03); // iconst_m1..5
         }
       }
       p = end;

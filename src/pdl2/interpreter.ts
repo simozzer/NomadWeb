@@ -116,6 +116,52 @@ export interface DecodeOptions {
   validateComputed?: boolean;
 }
 
+/** Runaway guard: a malformed packet must fail rather than spin. */
+const MAX_STEPS = 2_000_000;
+
+const NOOP = () => {};
+
+type Continuation = () => void;
+
+interface DecodeState {
+  messageId?: string;
+  steps: number;
+}
+
+interface Ctx {
+  reader: BitReader;
+  scope: Scope;
+  node: Decoded;
+  state: DecodeState;
+  options: DecodeOptions;
+  path: string[];
+}
+
+/** A failure that backtracking must not swallow. */
+class Pdl2Fatal extends Error {}
+
+/** Signals that an optional rule matched without consuming anything. */
+class EmptyMatch extends Error {}
+
+function newNode(rule: string): Decoded {
+  return { rule, values: new Map(), items: new Map(), annotations: new Map() };
+}
+
+type NodeSnapshot = [Map<string, number>, Map<string, Decoded | Decoded[]>, Map<string, string>];
+
+function snapshotNode(node: Decoded): NodeSnapshot {
+  return [new Map(node.values), new Map(node.items), new Map(node.annotations)];
+}
+
+function restoreNode(node: Decoded, [values, items, annotations]: NodeSnapshot): void {
+  node.values.clear();
+  for (const [k, v] of values) node.values.set(k, v);
+  node.items.clear();
+  for (const [k, v] of items) node.items.set(k, v);
+  node.annotations.clear();
+  for (const [k, v] of annotations) node.annotations.set(k, v);
+}
+
 export class Pdl2Decoder {
   private readonly grammar: Grammar;
 
@@ -125,15 +171,20 @@ export class Pdl2Decoder {
 
   decode(bytes: Uint8Array, options: DecodeOptions = {}): DecodeResult {
     const reader = new BitReader(bytes);
-    const state = { messageId: undefined as string | undefined };
-    const root = this.decodeRule(
-      this.requireRule(this.grammar.start),
+    const state: DecodeState = { steps: 0 };
+    const rule = this.requireRule(this.grammar.start);
+    const root = newNode(rule.name);
+
+    if (rule.alignment) reader.align(rule.alignment);
+    this.seq(rule.body, 0, {
       reader,
-      new Scope(null),
+      scope: new Scope(null),
+      node: root,
       state,
       options,
-      [],
-    );
+      path: [rule.name],
+    }, NOOP);
+
     return { root, messageId: state.messageId, bitsConsumed: reader.pos };
   }
 
@@ -143,207 +194,208 @@ export class Pdl2Decoder {
     return rule;
   }
 
-  private decodeRule(
-    rule: Rule,
-    reader: BitReader,
-    parentScope: Scope,
-    state: { messageId?: string },
-    options: DecodeOptions,
-    path: string[],
-  ): Decoded {
-    if (rule.alignment) reader.align(rule.alignment);
-
-    const scope = new Scope(parentScope);
-    const node: Decoded = {
-      rule: rule.name,
-      values: new Map(),
-      items: new Map(),
-      annotations: new Map(),
-    };
-    const rulePath = [...path, rule.name];
-
-    this.decodeItems(rule.body, reader, scope, node, state, options, rulePath);
-    return node;
+  /**
+   * Parses `items[index..]`, then calls `cont` for everything that follows it.
+   *
+   * Continuation-passing is what makes backtracking possible: an optional or an
+   * alternative commits only once the *rest of the packet* has parsed, so a
+   * choice that looks right locally but strands later fields gets retried.
+   *
+   * The patch list needs this. `StringList` is a recursive optional chain whose
+   * final element is indistinguishable from the trailing endmarker, so a greedy
+   * match swallows the endmarker and checksum and the packet fails to close.
+   */
+  private seq(items: Item[], index: number, ctx: Ctx, cont: Continuation): void {
+    if (++ctx.state.steps > MAX_STEPS) {
+      throw new Pdl2Fatal('parse did not converge');
+    }
+    if (index >= items.length) {
+      cont();
+      return;
+    }
+    this.item(items[index], ctx, () => this.seq(items, index + 1, ctx, cont));
   }
 
-  private decodeItems(
-    items: Item[],
-    reader: BitReader,
-    scope: Scope,
-    node: Decoded,
-    state: { messageId?: string },
-    options: DecodeOptions,
-    path: string[],
-  ): void {
+  private item(item: Item, ctx: Ctx, cont: Continuation): void {
+    const { reader, scope, node, state, options, path } = ctx;
     const sum = (from: number, to: number, unit: number) => reader.sumRange(from, to, unit);
 
-    for (const item of items) {
-      switch (item.kind) {
-        case 'const': {
-          const actual = reader.read(item.width);
-          if (actual !== item.value) {
-            throw new Pdl2DecodeError(
-              `expected constant 0x${item.value.toString(16)} (${item.width} bits) ` +
-                `but read 0x${actual.toString(16)} at bit ${reader.pos - item.width}`,
-              path,
-            );
-          }
-          break;
+    switch (item.kind) {
+      case 'const': {
+        const actual = reader.read(item.width);
+        if (actual !== item.value) {
+          throw new Pdl2DecodeError(
+            `expected constant 0x${item.value.toString(16)} (${item.width} bits) ` +
+              `but read 0x${actual.toString(16)} at bit ${reader.pos - item.width}`,
+            path,
+          );
         }
+        return cont();
+      }
 
-        case 'var': {
-          const override = options.overrides?.[item.name];
-          let value: number;
+      case 'var': {
+        const override = options.overrides?.[item.name];
+        let value: number;
 
-          if (item.implicit) {
-            // Consumes no bits; the value is computed (or overridden).
-            value = override ?? (item.value ? evaluate(item.value, scope, sum) : 0);
-          } else {
-            value = reader.read(item.width);
-            if (item.value && options.validateComputed) {
-              const expected = evaluate(item.value, scope, sum) & ((1 << item.width) - 1);
-              if (expected !== value) {
-                throw new Pdl2DecodeError(
-                  `field ${item.name} is 0x${value.toString(16)} but the grammar ` +
-                    `computes 0x${expected.toString(16)}`,
-                  path,
-                );
-              }
-            }
-          }
-
-          scope.set(item.name, value);
-          node.values.set(item.name, value);
-          break;
-        }
-
-        case 'rule': {
-          const target = this.requireRule(item.rule);
-          const saved = reader.pos;
-          try {
-            const child = this.decodeRule(target, reader, scope, state, options, path);
-            if (item.item === '') {
-              // Inline form: merge the child's fields into this node.
-              for (const [k, v] of child.values) {
-                node.values.set(k, v);
-                scope.set(k, v);
-              }
-              for (const [k, v] of child.items) node.items.set(k, v);
-              for (const [k, v] of child.annotations) node.annotations.set(k, v);
-            } else {
-              node.items.set(item.item, child);
-            }
-          } catch (error) {
-            if (!item.optional) throw error;
-            reader.pos = saved;
-          }
-          break;
-        }
-
-        case 'switch': {
-          const selector = evaluate(item.selector, scope, sum);
-          const matched = item.cases.find((c) => c.value === selector);
-          if (matched) {
-            this.decodeItems(matched.body, reader, scope, node, state, options, path);
-          } else if (item.fallback === 'fail') {
-            throw new Pdl2DecodeError(
-              `no case for selector value 0x${selector.toString(16)}`,
-              path,
-            );
-          } else if (Array.isArray(item.fallback)) {
-            this.decodeItems(item.fallback, reader, scope, node, state, options, path);
-          }
-          break;
-        }
-
-        case 'alt': {
-          let lastError: unknown;
-          let ok = false;
-          for (const branch of item.alternatives) {
-            const saved = reader.pos;
-            // Work on a scratch node so a failed branch leaves nothing behind.
-            const scratch: Decoded = {
-              rule: node.rule,
-              values: new Map(),
-              items: new Map(),
-              annotations: new Map(),
-            };
-            try {
-              this.decodeItems(branch, reader, scope, scratch, state, options, path);
-              for (const [k, v] of scratch.values) {
-                node.values.set(k, v);
-                scope.set(k, v);
-              }
-              for (const [k, v] of scratch.items) node.items.set(k, v);
-              for (const [k, v] of scratch.annotations) node.annotations.set(k, v);
-              ok = true;
-              break;
-            } catch (error) {
-              lastError = error;
-              reader.pos = saved;
-            }
-          }
-          if (!ok) throw lastError;
-          break;
-        }
-
-        case 'repeat': {
-          const count = evaluate(item.count, scope, sum);
-          const collected: Decoded[] = [];
-          const scalars: number[] = [];
-
-          for (let i = 0; i < count; i++) {
-            if (item.terminator !== undefined && item.body.kind === 'var') {
-              if (reader.remaining < item.body.width) break;
-              const value = reader.read(item.body.width);
-              if (value === item.terminator) break;
-              scalars.push(value);
-              continue;
-            }
-            if (item.body.kind === 'var') {
-              scalars.push(reader.read(item.body.width));
-              continue;
-            }
-            if (item.body.kind === 'rule') {
-              collected.push(
-                this.decodeRule(this.requireRule(item.body.rule), reader, scope, state, options, path),
+        if (item.implicit) {
+          value = override ?? (item.value ? evaluate(item.value, scope, sum) : 0);
+        } else {
+          value = reader.read(item.width);
+          if (item.value && options.validateComputed) {
+            const expected = evaluate(item.value, scope, sum) & ((1 << item.width) - 1);
+            if (expected !== value) {
+              throw new Pdl2DecodeError(
+                `field ${item.name} is 0x${value.toString(16)} but the grammar ` +
+                  `computes 0x${expected.toString(16)}`,
+                path,
               );
             }
           }
-
-          if (item.body.kind === 'var') {
-            // A terminated byte run is a string; keep both forms.
-            node.values.set(`${item.body.name}$length`, scalars.length);
-            node.items.set(
-              item.body.name,
-              scalars.map((v) => ({
-                rule: 'scalar',
-                values: new Map([['value', v]]),
-                items: new Map(),
-                annotations: new Map(),
-              })),
-            );
-          } else if (item.body.kind === 'rule' && item.body.item) {
-            node.items.set(item.body.item, collected);
-          }
-          break;
         }
 
-        case 'label':
-          scope.setLabel(item.name, reader.pos);
-          break;
-
-        case 'messageId':
-          state.messageId = item.id;
-          break;
-
-        case 'annotation':
-          node.annotations.set(item.name, item.value);
-          break;
-
-        case 'fail':
-          throw new Pdl2DecodeError('reached an explicit fail', path);
+        scope.set(item.name, value);
+        node.values.set(item.name, value);
+        return cont();
       }
+
+      case 'rule': {
+        const target = this.requireRule(item.rule);
+        const start = reader.pos;
+
+        const run = () => {
+          const child = newNode(target.name);
+          if (target.alignment) reader.align(target.alignment);
+
+          this.seq(
+            target.body,
+            0,
+            { ...ctx, scope: new Scope(scope), node: child, path: [...path, target.name] },
+            () => {
+              // A self-referential optional that consumed nothing would recurse
+              // forever, e.g. `?StringList$next` at the end of the buffer.
+              if (item.optional && reader.pos === start) throw new EmptyMatch();
+
+              // Attach only once the child is complete, so a branch that is
+              // later rolled back leaves nothing behind.
+              if (item.item === '') {
+                for (const [k, v] of child.values) {
+                  node.values.set(k, v);
+                  scope.set(k, v);
+                }
+                for (const [k, v] of child.items) node.items.set(k, v);
+                for (const [k, v] of child.annotations) node.annotations.set(k, v);
+              } else {
+                node.items.set(item.item, child);
+              }
+              cont();
+            },
+          );
+        };
+
+        if (!item.optional) return run();
+
+        const snapshot = snapshotNode(node);
+        try {
+          return run();
+        } catch (error) {
+          if (error instanceof Pdl2Fatal) throw error;
+          reader.pos = start;
+          restoreNode(node, snapshot);
+          return cont();
+        }
+      }
+
+      case 'switch': {
+        const selector = evaluate(item.selector, scope, sum);
+        const matched = item.cases.find((c) => c.value === selector);
+        if (matched) return this.seq(matched.body, 0, ctx, cont);
+        if (item.fallback === 'fail') {
+          throw new Pdl2DecodeError(
+            `no case for selector value 0x${selector.toString(16)}`,
+            path,
+          );
+        }
+        if (Array.isArray(item.fallback)) return this.seq(item.fallback, 0, ctx, cont);
+        return cont();
+      }
+
+      case 'alt': {
+        const start = reader.pos;
+        const snapshot = snapshotNode(node);
+        let lastError: unknown;
+
+        for (const branch of item.alternatives) {
+          try {
+            return this.seq(branch, 0, ctx, cont);
+          } catch (error) {
+            if (error instanceof Pdl2Fatal) throw error;
+            lastError = error;
+            reader.pos = start;
+            restoreNode(node, snapshot);
+          }
+        }
+        throw lastError ?? new Pdl2DecodeError('no alternative matched', path);
+      }
+
+      case 'repeat': {
+        const count = evaluate(item.count, scope, sum);
+
+        if (item.body.kind === 'var') {
+          const { name, width } = item.body;
+          const scalars: number[] = [];
+          for (let i = 0; i < count; i++) {
+            if (reader.remaining < width) break;
+            const value = reader.read(width);
+            if (item.terminator !== undefined && value === item.terminator) break;
+            scalars.push(value);
+          }
+          node.values.set(`${name}$length`, scalars.length);
+          node.items.set(
+            name,
+            scalars.map((v) => {
+              const scalar = newNode('scalar');
+              scalar.values.set('value', v);
+              return scalar;
+            }),
+          );
+          return cont();
+        }
+
+        if (item.body.kind === 'rule') {
+          const target = this.requireRule(item.body.rule);
+          const collected: Decoded[] = [];
+          for (let i = 0; i < count; i++) {
+            const child = newNode(target.name);
+            if (target.alignment) reader.align(target.alignment);
+            // A counted repeat is not a choice point: the count is explicit, so
+            // every element must parse where it stands.
+            this.seq(
+              target.body,
+              0,
+              { ...ctx, scope: new Scope(scope), node: child, path: [...path, target.name] },
+              NOOP,
+            );
+            collected.push(child);
+          }
+          if (item.body.item) node.items.set(item.body.item, collected);
+        }
+        return cont();
+      }
+
+      case 'label':
+        scope.setLabel(item.name, reader.pos);
+        return cont();
+
+      case 'messageId':
+        state.messageId = item.id;
+        return cont();
+
+      case 'annotation':
+        node.annotations.set(item.name, item.value);
+        return cont();
+
+      case 'fail':
+        throw new Pdl2DecodeError('reached an explicit fail', path);
     }
   }
 }
@@ -445,12 +497,34 @@ export class Pdl2Encoder {
           break;
         }
 
-        case 'alt':
-          // Deterministic choice is not recoverable from the data alone, so
-          // the first branch is taken; callers needing the other branch should
-          // encode its rule directly.
-          this.encodeItems(item.alternatives[0], data, writer, scope);
+        case 'alt': {
+          // Which branch applies is implied by the fields present: PatchHandling
+          // is `(PatchModification | PatchCommand)`, and only one of them can be
+          // satisfied by a given payload. Try each, rolling the writer back after
+          // a partial write, and keep the first that encodes completely.
+          const start = writer.pos;
+          let encoded = false;
+          let lastError: unknown;
+
+          for (const branch of item.alternatives) {
+            try {
+              this.encodeItems(branch, data, writer, scope);
+              encoded = true;
+              break;
+            } catch (error) {
+              lastError = error;
+              writer.truncate(start);
+            }
+          }
+
+          if (!encoded) {
+            throw new Pdl2EncodeError(
+              `no alternative could be encoded from the given fields: ` +
+                `${(lastError as Error)?.message ?? 'unknown reason'}`,
+            );
+          }
           break;
+        }
 
         case 'repeat': {
           if (item.body.kind === 'var') {

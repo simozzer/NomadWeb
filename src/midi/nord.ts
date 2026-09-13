@@ -34,6 +34,89 @@ export interface DeviceIdentity {
   version: string;
 }
 
+/** Banks and positions the device accepts, per GetPatchListMessage's own bounds. */
+export const MAX_BANKS = 9;
+export const MAX_POSITION = 99;
+
+export interface PatchListEntry {
+  bank: number;
+  position: number;
+  name: string;
+  /** The device reported this slot as empty (ListCmd code 0x02). */
+  empty: boolean;
+}
+
+/** Follows a single named child, which the grammar may or may not have produced. */
+function child(node: Decoded | undefined, name: string): Decoded | undefined {
+  const value = node?.items.get(name);
+  return value && !Array.isArray(value) ? value : undefined;
+}
+
+function textOf(node: Decoded | undefined): string {
+  const chars = node?.items.get('chars');
+  if (!Array.isArray(chars)) return '';
+  return chars
+    .map((c) => c.values.get('value') ?? 0)
+    .filter((code) => code !== 0)
+    .map((code) => String.fromCharCode(code))
+    .join('')
+    .trim();
+}
+
+/**
+ * Flattens a `PatchListResponse` into entries.
+ *
+ * The reply is a recursive `StringList`: each node optionally carries a
+ * `ListCmd` that moves the cursor, then the patch name at that spot. Absent a
+ * command the cursor simply advances by one. The command codes and the
+ * traversal path (`data:patchList:data`, then `cmd`/`name`/`next`) are those
+ * the original `PatchListMessage` walks.
+ */
+export function parsePatchList(
+  root: Decoded,
+  defaultBank: number,
+  startPosition: number,
+): PatchListEntry[] {
+  const response = child(child(root, 'data'), 'patchList');
+  if (!response) throw new Error('reply carries no patch list');
+
+  const entries: PatchListEntry[] = [];
+  let bank = defaultBank;
+  let position = startPosition;
+  let first = true;
+
+  for (let node = child(response, 'data'); node; node = child(node, 'next')) {
+    let empty = false;
+    // Entries run consecutively unless a command moves the cursor; the first
+    // entry sits at the position that was requested.
+    let advance = !first;
+    const cmd = child(node, 'cmd');
+
+    if (cmd) {
+      const code = cmd.values.get('code');
+      if (code === 0x01) {
+        position = child(cmd, 'nextposition')?.values.get('position') ?? position;
+        advance = false;
+      } else if (code === 0x02) {
+        // An empty slot still occupies a position; it just holds no patch.
+        empty = true;
+      } else if (code === 0x03 || code === 0x05) {
+        const target = child(cmd, code === 0x03 ? 'nextsection' : 'repeatedsection');
+        bank = target?.values.get('section') ?? bank;
+        position = target?.values.get('position') ?? position;
+        advance = false;
+      }
+    }
+
+    if (advance) position++;
+    first = false;
+
+    entries.push({ bank, position, name: textOf(child(node, 'name')), empty });
+  }
+
+  return entries;
+}
+
 export type MessageListener = (message: DecodeResult, raw: Uint8Array) => void;
 
 export interface NordLogEntry {
@@ -175,6 +258,80 @@ export class NordModular {
       throw new Error('the device replied to IAm without an identification block');
     }
     return this.identity;
+  }
+
+  /**
+   * Requests one page of the patch list, starting at a bank and position.
+   *
+   * Command codes are those the original `GetPatchListMessage` emits:
+   * cc `0x17` (PatchHandling), pp `0x41` (PatchManagerCommand), ssc `0x14`.
+   */
+  requestPatchList(section: number, position: number): Uint8Array {
+    if (section < 0 || section >= MAX_BANKS) {
+      throw new RangeError(`invalid bank ${section} (0-${MAX_BANKS - 1})`);
+    }
+    if (position < 0 || position > MAX_POSITION) {
+      throw new RangeError(`invalid position ${position} (0-${MAX_POSITION})`);
+    }
+    // Nesting follows the grammar: Sysex$data -> PatchHandling, whose
+    // `(PatchModification | PatchCommand)` branch is itself named `data`.
+    return this.send(CC.PatchHandling, 0, {
+      data: { data: { pp: 0x41, command: { ssc: 0x14, data: { section, position } } } },
+    });
+  }
+
+  /**
+   * Walks every bank and returns the patches found.
+   *
+   * The device answers each request with a run of entries; a run ends when it
+   * stops yielding new positions, at which point the next bank is requested.
+   */
+  async fetchPatchList(
+    options: {
+      /** Banks to read; defaults to all of them. */
+      banks?: number[];
+      onProgress?: (entries: PatchListEntry[]) => void;
+      /** Polled between requests so a long scan can be interrupted. */
+      shouldStop?: () => boolean;
+      timeoutMs?: number;
+    } = {},
+  ): Promise<PatchListEntry[]> {
+    const all: PatchListEntry[] = [];
+    const seen = new Set<string>();
+    const banks = options.banks ?? Array.from({ length: MAX_BANKS }, (_, i) => i);
+
+    for (const bank of banks) {
+      if (options.shouldStop?.()) break;
+      let position = 0;
+      // Each pass must advance past its last entry or the bank is done; the
+      // cap is a backstop against a device that keeps repeating a page.
+      for (let attempt = 0; attempt < MAX_POSITION + 2; attempt++) {
+        if (options.shouldStop?.()) return all;
+        const reply = this.waitFor('PatchListResponse', options.timeoutMs ?? 3000);
+        this.requestPatchList(bank, position);
+
+        let entries: PatchListEntry[];
+        try {
+          entries = parsePatchList((await reply).root, bank, position);
+        } catch {
+          break; // No response for this bank: treat it as the end of the list.
+        }
+
+        const fresh = entries.filter((e) => !seen.has(`${e.bank}:${e.position}`));
+        for (const entry of fresh) {
+          seen.add(`${entry.bank}:${entry.position}`);
+          all.push(entry);
+        }
+        if (fresh.length) options.onProgress?.(all);
+
+        const last = entries.at(-1);
+        if (!fresh.length || !last || last.position <= position) break;
+        position = last.position + 1;
+        if (position > MAX_POSITION) break;
+      }
+    }
+
+    return all;
   }
 
   /** Resolves on the next message with the given id, or rejects on timeout. */
