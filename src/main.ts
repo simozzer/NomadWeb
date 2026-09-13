@@ -51,15 +51,24 @@ async function main(): Promise<void> {
   log('info', `${catalogue.modules.size} modules, ${theme.modules.size} themed layouts`);
 
   // ---- MIDI ----
+  const countersEl = $('counters');
+  const showStream = $<HTMLInputElement>('show-stream');
+  const showRaw = $<HTMLInputElement>('show-raw');
+
   const transport = new WebMidiTransport();
   const nord = new NordModular(transport, midiGrammar);
   let connected = false;
 
-  nord.addListener((message) => {
-    // Meters and lights stream continuously; keep them out of the log.
-    if (message.messageId === 'meters' || message.messageId === 'lights') return;
-    log('in', `${message.messageId ?? 'unknown'}`);
+  nord.addListener((message, raw) => {
+    const streaming = message.messageId === 'meters' || message.messageId === 'lights';
+    if (streaming && !showStream.checked) return;
+    log('in', `${message.messageId ?? 'unknown'}  ${formatSysex(raw, 24)}`);
   });
+
+  // Anything that framed but would not decode is a protocol finding, not noise.
+  nord.onDecodeError = (raw, error) => {
+    log('err', `undecodable  ${formatSysex(raw, 24)}  ${error}`);
+  };
 
   const portPickers = $('port-pickers');
   const inputSelect = $<HTMLSelectElement>('input-port');
@@ -108,12 +117,49 @@ async function main(): Promise<void> {
     }
   });
 
-  $('connect').addEventListener('click', async () => {
-    try {
-      await transport.open(inputSelect.value, outputSelect.value);
-      nord.start();
-      log('info', `opened ${inputSelect.selectedOptions[0]?.textContent} / ${outputSelect.selectedOptions[0]?.textContent}`);
+  // ---- diagnostics ----
+  function refreshCounters(): void {
+    const framing = transport.framingStats;
+    const cells: [string, string | number][] = [
+      ['MIDI events in', transport.rawEventsReceived],
+      ['bytes in', transport.rawBytesReceived],
+      ['SysEx framed', framing.framed],
+      ['truncated', framing.truncated],
+      ['stray bytes', framing.stray],
+    ];
+    countersEl.replaceChildren();
+    for (const [label, value] of cells) {
+      const cell = document.createElement('div');
+      cell.className = 'counter' + (label === 'bytes in' && value === 0 ? ' counter--zero' : '');
+      const v = document.createElement('strong');
+      v.textContent = String(value);
+      const l = document.createElement('span');
+      l.textContent = label;
+      cell.append(v, l);
+      countersEl.appendChild(cell);
+    }
+  }
 
+  transport.addRawListener((data) => {
+    if (showRaw.checked) log('in', `raw  ${formatSysex(data, 24)}`);
+    refreshCounters();
+  });
+
+  $('probe').addEventListener('click', () => {
+    try {
+      const message = nord.send(CC.IAm, 0, {
+        data: { sender: 0, versionHigh: 0, versionLow: 0 },
+      });
+      log('out', `identify request  ${formatSysex(message)}`);
+    } catch (error) {
+      log('err', (error as Error).message);
+    }
+  });
+
+  $('clear-log').addEventListener('click', () => logEl.replaceChildren());
+
+  $('identify').addEventListener('click', async () => {
+    try {
       setStatus('identifying…', 'idle');
       const identity = await nord.identify();
       connected = true;
@@ -137,7 +183,35 @@ async function main(): Promise<void> {
       log('info', `identified ${identity.deviceName}, OS ${identity.version}`);
     } catch (error) {
       connected = false;
-      setStatus('not connected', 'bad');
+      setStatus('identify failed', 'bad');
+      log('err', (error as Error).message);
+      log(
+        'info',
+        transport.rawBytesReceived === 0
+          ? 'Nothing has arrived on the input port at all. Turn a knob on the Nord: ' +
+            'if the counters stay at zero, the input port is wrong.'
+          : `${transport.rawBytesReceived} bytes did arrive, so the input path works. ` +
+            'The device is not answering this particular request.',
+      );
+    }
+  });
+
+  $('connect').addEventListener('click', async () => {
+    try {
+      await transport.open(inputSelect.value, outputSelect.value);
+      nord.start();
+      $<HTMLButtonElement>('identify').disabled = false;
+      $('diagnostics').hidden = false;
+      refreshCounters();
+      setStatus('ports open', 'idle');
+      log(
+        'info',
+        `opened in="${inputSelect.selectedOptions[0]?.textContent}" ` +
+          `out="${outputSelect.selectedOptions[0]?.textContent}"`,
+      );
+      log('info', 'Listening. Turn a knob on the Nord to confirm the input path.');
+    } catch (error) {
+      setStatus('could not open ports', 'bad');
       log('err', (error as Error).message);
     }
   });

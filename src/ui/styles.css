@@ -124,3 +124,21 @@ svg.module .knob:focus, svg.module .button:focus, svg.module .slider:focus { out
 .log .out { color: var(--accent); }
 .log .in { color: var(--ok); }
 .log .err { color: var(--bad); }
+
+.counters { display: flex; gap: 8px; flex-wrap: wrap; margin: 8px 0 10px; }
+
+.counter {
+  display: flex;
+  flex-direction: column;
+  min-width: 92px;
+  padding: 6px 10px;
+  background: #14161a;
+  border: 1px solid var(--panel-edge);
+  border-radius: 6px;
+}
+
+.counter strong { font: 600 15px/1.2 ui-monospace, Consolas, monospace; }
+.counter span { font-size: 10px; color: var(--ink-dim); text-transform: uppercase; letter-spacing: .05em; }
+.counter--zero strong { color: var(--bad); }
+
+label.inline { flex-direction: row; align-items: center; gap: 5px; }

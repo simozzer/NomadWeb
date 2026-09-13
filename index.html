@@ -26,8 +26,30 @@
         <div class="row" id="port-pickers" hidden>
           <label>In <select id="input-port"></select></label>
           <label>Out <select id="output-port"></select></label>
-          <button id="connect" type="button">Connect &amp; identify</button>
+          <button id="connect" type="button">Open ports</button>
+          <button id="identify" type="button" disabled>Identify</button>
         </div>
+
+        <div id="diagnostics" hidden>
+          <p class="hint">
+            <strong>If Identify times out, check the input path first:</strong>
+            turn a knob on the Nord, or press a key. Anything it sends will appear
+            in the counters below. If they stay at zero the input port is wrong
+            or nothing is reaching the browser — no outgoing message can help that.
+          </p>
+          <div class="counters" id="counters"></div>
+          <div class="row">
+            <button id="probe" type="button">Send Identify request (no wait)</button>
+            <button id="clear-log" type="button">Clear log</button>
+            <label class="inline">
+              <input type="checkbox" id="show-stream" /> log meters &amp; lights
+            </label>
+            <label class="inline">
+              <input type="checkbox" id="show-raw" checked /> log raw bytes
+            </label>
+          </div>
+        </div>
+
         <dl class="identity" id="identity" hidden></dl>
       </section>
 

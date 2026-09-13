@@ -63,6 +63,14 @@ export class NordModular {
 
   identity: DeviceIdentity | null = null;
 
+  /**
+   * Called for a framed message the grammar could not decode.
+   *
+   * Worth surfacing rather than swallowing: against real hardware these are how
+   * gaps in the 2008 grammar show up.
+   */
+  onDecodeError: ((raw: Uint8Array, error: string) => void) | null = null;
+
   constructor(transport: WebMidiTransport, midiGrammarSource: string) {
     const grammar = parsePdl2(midiGrammarSource);
     this.decoder = new Pdl2Decoder(grammar);
@@ -104,6 +112,7 @@ export class NordModular {
         hex: formatSysex(raw),
         error: (error as Error).message,
       });
+      this.onDecodeError?.(raw, (error as Error).message);
       return;
     }
 

@@ -18,6 +18,8 @@ export class MidiUnavailableError extends Error {
 }
 
 export type SysexListener = (message: Uint8Array) => void;
+/** Every inbound MIDI event, before SysEx reassembly. For diagnostics. */
+export type RawListener = (data: Uint8Array) => void;
 
 /**
  * Web MIDI transport for a single input/output pair, with SysEx reassembly.
@@ -32,6 +34,12 @@ export class WebMidiTransport {
   private output: MIDIOutput | null = null;
   private readonly framer = new SysexFramer();
   private readonly listeners = new Set<SysexListener>();
+  private readonly rawListeners = new Set<RawListener>();
+
+  /** Total bytes seen on the input port, whether or not they framed. */
+  rawBytesReceived = 0;
+  /** Inbound MIDI events seen, whether or not they framed. */
+  rawEventsReceived = 0;
 
   /** Fired when ports appear or disappear, so the UI can refresh its lists. */
   onPortsChanged: (() => void) | null = null;
@@ -118,6 +126,13 @@ export class WebMidiTransport {
     input.onmidimessage = (event: MIDIMessageEvent) => {
       // `data` is nullable in the spec; a null payload carries nothing to frame.
       if (!event.data) return;
+
+      // Counted and reported before framing, so "the port is alive but nothing
+      // parses" stays distinguishable from "nothing is arriving at all".
+      this.rawEventsReceived++;
+      this.rawBytesReceived += event.data.length;
+      for (const listener of this.rawListeners) listener(event.data);
+
       for (const message of this.framer.push(event.data)) {
         for (const listener of this.listeners) listener(message);
       }
@@ -148,5 +163,16 @@ export class WebMidiTransport {
   addListener(listener: SysexListener): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
+  }
+
+  addRawListener(listener: RawListener): () => void {
+    this.rawListeners.add(listener);
+    return () => this.rawListeners.delete(listener);
+  }
+
+  /** Sends a raw byte sequence unchanged, for probing. */
+  sendRaw(bytes: Uint8Array): void {
+    if (!this.output) throw new Error('no MIDI output is open');
+    this.output.send(bytes);
   }
 }
