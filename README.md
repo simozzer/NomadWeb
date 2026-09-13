@@ -63,7 +63,7 @@ truth — including the checksum rule, which the grammar expresses declaratively
 - Module catalogue and panel layouts: 1066 bindings, 382 connectors, none dangling
 - All 45 value formatters compile and evaluate
 
-103 checks pass (`npm test`).
+124 checks pass (`npm test`).
 
 **Not yet done**
 
@@ -74,10 +74,13 @@ truth — including the checksum rule, which the grammar expresses declaratively
 - Custom panel graphics — LFO shapes, envelope curves — drawn as placeholders
 - Meters and LEDs are decoded but not shown on the panels
 
-**Hardware status.** Device identification, the patch list and patch loading have
-been exercised against a real Nord Modular. The canvas edit messages
-(move, cable add/delete) are verified against their bit layouts in tests but have
-not been confirmed on hardware.
+**Hardware status.** Confirmed against a real Nord Modular: device identification,
+the patch list, loading a patch into a slot, and the full patch read-back — which
+displays correctly on the canvas.
+
+Not yet confirmed on hardware: the canvas edit messages (module move, cable add and
+delete, parameter change). They are verified against their bit layouts in tests, and
+they are modification-family commands, so try them on a patch you can afford to lose.
 
 ## Licence
 
