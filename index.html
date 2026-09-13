@@ -14,110 +14,127 @@
       <span id="device-status" class="status status--idle">not connected</span>
     </header>
 
-    <main>
-      <section class="panel" id="connection">
-        <h2>Device</h2>
-        <p class="hint" id="connection-hint">
-          Web MIDI needs permission and a secure context (HTTPS or localhost).
-        </p>
-        <div class="row">
-          <button id="request-access" type="button">Request MIDI access</button>
-        </div>
-        <div class="row" id="port-pickers" hidden>
-          <label>In <select id="input-port"></select></label>
-          <label>Out <select id="output-port"></select></label>
-          <button id="connect" type="button">Open ports</button>
-          <button id="identify" type="button" disabled>Identify</button>
-        </div>
-
-        <div id="diagnostics" hidden>
-          <p class="hint">
-            <strong>If Identify times out, check the input path first:</strong>
-            turn a knob on the Nord, or press a key. Anything it sends will appear
-            in the counters below. If they stay at zero the input port is wrong
-            or nothing is reaching the browser — no outgoing message can help that.
+    <div class="app">
+      <aside class="sidebar" id="sidebar">
+        <section class="panel" id="connection">
+          <h2>Device</h2>
+          <p class="hint" id="connection-hint">
+            Web MIDI needs permission and a secure context (HTTPS or localhost).
           </p>
-          <div class="counters" id="counters"></div>
           <div class="row">
-            <button id="probe" type="button">Send Identify request (no wait)</button>
-            <button id="clear-log" type="button">Clear log</button>
-            <label class="inline">
-              <input type="checkbox" id="show-stream" /> log meters &amp; lights
+            <button id="request-access" type="button">Request MIDI access</button>
+          </div>
+          <div class="row" id="port-pickers" hidden>
+            <label>In <select id="input-port"></select></label>
+            <label>Out <select id="output-port"></select></label>
+            <button id="connect" type="button">Open ports</button>
+            <button id="identify" type="button" disabled>Identify</button>
+          </div>
+
+          <div id="diagnostics" hidden>
+            <p class="hint">
+              <strong>If Identify times out, check the input path first:</strong>
+              turn a knob on the Nord. If the counters stay at zero the input port
+              is wrong — no outgoing message can help that.
+            </p>
+            <div class="counters" id="counters"></div>
+            <div class="row">
+              <button id="probe" type="button">Identify (no wait)</button>
+              <button id="clear-log" type="button">Clear log</button>
+            </div>
+            <div class="row">
+              <label class="inline">
+                <input type="checkbox" id="show-stream" /> log meters &amp; lights
+              </label>
+              <label class="inline">
+                <input type="checkbox" id="show-raw" checked /> log raw bytes
+              </label>
+            </div>
+          </div>
+
+          <dl class="identity" id="identity" hidden></dl>
+        </section>
+
+        <section class="panel" id="patches">
+          <h2>Patches <span class="count" id="patch-count"></span></h2>
+          <div class="row">
+            <label>Bank
+              <select id="patch-bank">
+                <option value="all">All banks</option>
+              </select>
             </label>
-            <label class="inline">
-              <input type="checkbox" id="show-raw" checked /> log raw bytes
+            <label>Into slot
+              <select id="target-slot">
+                <option value="0">Slot A</option>
+                <option value="1">Slot B</option>
+                <option value="2">Slot C</option>
+                <option value="3">Slot D</option>
+              </select>
             </label>
           </div>
-        </div>
-
-        <dl class="identity" id="identity" hidden></dl>
-      </section>
-
-      <section class="panel" id="patches">
-        <h2>Patches <span class="count" id="patch-count"></span></h2>
-        <div class="row">
-          <label>Bank
-            <select id="patch-bank">
-              <option value="all">All banks</option>
-            </select>
-          </label>
-          <label>Into slot
-            <select id="target-slot">
-              <option value="0">Slot A</option>
-              <option value="1">Slot B</option>
-              <option value="2">Slot C</option>
-              <option value="3">Slot D</option>
-            </select>
-          </label>
-          <button id="fetch-patches" type="button" disabled>Fetch patch list</button>
-          <button id="cancel-patches" type="button" hidden>Cancel</button>
-          <label class="inline">
-            <input type="checkbox" id="hide-empty" checked /> hide empty slots
-          </label>
-        </div>
-        <p class="hint" id="patch-hint">Identify the device first.</p>
-        <div id="patch-list" class="patch-list"></div>
-      </section>
-
-      <section class="panel" id="current-patch" hidden>
-        <h2>Patch editor <span class="count" id="loaded-summary"></span></h2>
-        <div class="row">
-          <div class="tabs" id="area-tabs">
-            <button type="button" data-area="voice" class="tab tab--active">Voice area</button>
-            <button type="button" data-area="common" class="tab">Common / FX</button>
+          <div class="row">
+            <button id="fetch-patches" type="button" disabled>Fetch patch list</button>
+            <button id="cancel-patches" type="button" hidden>Cancel</button>
+            <label class="inline">
+              <input type="checkbox" id="hide-empty" checked /> hide empty
+            </label>
           </div>
-          <button id="fit-view" type="button">Fit</button>
-          <span class="hint hint--inline">
-            Drag a module by its title. Drag connector to connector to patch a
-            cable; click a cable to cut it. Scroll to zoom, drag the background to pan.
-          </span>
-        </div>
-        <p class="hint" id="loaded-hint"></p>
-        <div id="patch-canvas-host" class="canvas-host"></div>
-      </section>
+          <p class="hint" id="patch-hint">Identify the device first.</p>
+          <div id="patch-list" class="patch-list"></div>
+        </section>
 
-      <section class="panel" id="browser">
-        <h2>Modules <span class="count" id="module-count"></span></h2>
-        <div class="row">
-          <label>Category
-            <select id="category"></select>
-          </label>
-          <label class="grow">Search
-            <input id="search" type="search" placeholder="name, e.g. ADSR" />
-          </label>
-        </div>
-        <div id="module-grid" class="module-grid"></div>
-      </section>
+        <section class="panel" id="browser">
+          <h2>Modules <span class="count" id="module-count"></span></h2>
+          <div class="row">
+            <label>Category
+              <select id="category"></select>
+            </label>
+          </div>
+          <div class="row">
+            <label class="grow">Search
+              <input id="search" type="search" placeholder="name, e.g. ADSR" />
+            </label>
+          </div>
+          <div id="module-grid" class="module-grid"></div>
+        </section>
+      </aside>
 
-      <section class="panel" id="monitor">
-        <h2>MIDI monitor</h2>
-        <p class="hint">
-          Outgoing messages are built from <code>midi.pdl2</code>. Until a patch is
-          loaded, edits are encoded and shown here rather than sent.
-        </p>
-        <pre id="log" class="log"></pre>
-      </section>
-    </main>
+      <main class="workspace">
+        <section class="editor" id="current-patch" hidden>
+          <header class="editor-bar">
+            <div class="tabs" id="area-tabs">
+              <button type="button" data-area="voice" class="tab tab--active">Voice</button>
+              <button type="button" data-area="common" class="tab">Common / FX</button>
+            </div>
+            <span class="count" id="loaded-summary"></span>
+            <div class="spacer"></div>
+            <span class="hint hint--inline">
+              Drag a module by its title · connector to connector to patch · click a cable to cut
+            </span>
+            <button id="fit-view" type="button">Fit</button>
+          </header>
+          <p class="hint" id="loaded-hint"></p>
+          <div id="patch-canvas-host" class="canvas-host"></div>
+        </section>
+
+        <section class="editor-placeholder" id="editor-placeholder">
+          <div>
+            <h2>No patch loaded</h2>
+            <p>Connect the Nord, fetch the patch list, then pick a patch to edit it here.</p>
+          </div>
+        </section>
+
+        <section class="monitor" id="monitor">
+          <header class="monitor-bar">
+            <button id="toggle-monitor" type="button" class="disclosure" aria-expanded="false">
+              MIDI monitor
+            </button>
+            <div class="spacer"></div>
+          </header>
+          <pre id="log" class="log" hidden></pre>
+        </section>
+      </main>
+    </div>
 
     <script type="module" src="/src/main.ts"></script>
   </body>

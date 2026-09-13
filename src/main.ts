@@ -362,6 +362,11 @@ async function main(): Promise<void> {
 
   const slotSelect = $<HTMLSelectElement>('target-slot');
   const loadedPanel = $('current-patch');
+  const placeholder = $('editor-placeholder');
+  const showEditor = (visible: boolean) => {
+    loadedPanel.hidden = !visible;
+    placeholder.hidden = visible;
+  };
   const canvasHost = $('patch-canvas-host');
   const loadedHint = $('loaded-hint');
   let loading = false;
@@ -382,6 +387,26 @@ async function main(): Promise<void> {
 
   $('fit-view').addEventListener('click', () => {
     patchView?.fit(canvasHost.clientWidth, canvasHost.clientHeight);
+  });
+
+  // The canvas now sizes itself to the workspace, so a window or sidebar
+  // resize needs the view refitted rather than left cropped.
+  let refit: ReturnType<typeof setTimeout>;
+  new ResizeObserver(() => {
+    clearTimeout(refit);
+    refit = setTimeout(() => {
+      if (patchView && canvasHost.clientWidth > 0) {
+        patchView.fit(canvasHost.clientWidth, canvasHost.clientHeight);
+      }
+    }, 120);
+  }).observe(canvasHost);
+
+  const monitorToggle = $<HTMLButtonElement>('toggle-monitor');
+  monitorToggle.addEventListener('click', () => {
+    const open = monitorToggle.getAttribute('aria-expanded') === 'true';
+    monitorToggle.setAttribute('aria-expanded', String(!open));
+    logEl.hidden = open;
+    if (!open) logEl.scrollTop = logEl.scrollHeight;
   });
 
   /** Renders the patch on the canvas for the currently selected area. */
@@ -459,7 +484,7 @@ async function main(): Promise<void> {
     loadedHint.textContent = undrawn
       ? `${undrawn} module(s) in this area have no themed layout and are not drawn.`
       : '';
-    loadedPanel.hidden = false;
+    showEditor(true);
   }
 
   /** Sends an edit, logging the wire bytes and surfacing any failure. */
@@ -486,7 +511,7 @@ async function main(): Promise<void> {
     patchHint.textContent = `Loading "${entry.name}" into ${slotName}…`;
 
     // The panel is shown up front so a failure is visible rather than silent.
-    loadedPanel.hidden = false;
+    showEditor(true);
 
     try {
       const report = await nord.loadAndFetchPatch(slot, entry.bank, entry.position);
