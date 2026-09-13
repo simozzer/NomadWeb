@@ -380,3 +380,14 @@ svg.patch-canvas { display: block; width: 100%; height: 100%; cursor: grab; }
   font: 11px/1 ui-monospace, Consolas, monospace;
   color: var(--ink-dim);
 }
+
+svg.module text.module-title { display: none; }
+.module-name { font: 600 10px ui-sans-serif, system-ui, sans-serif; fill: #e6e8ec; }
+.module-badge { font: 9px ui-monospace, Consolas, monospace; fill: #99a0ad; }
+.patch-module--dragging { opacity: .82; }
+.patch-module--dragging .module-strip { fill: var(--accent); }
+.patch-module--dragging .module-name { fill: #1a1a1a; }
+
+.patch-module--selected .module-strip { fill: var(--accent); }
+.patch-module--selected .module-name { fill: #1a1a1a; }
+.patch-module--selected .module-badge { fill: rgba(0,0,0,.6); }

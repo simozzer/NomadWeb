@@ -107,5 +107,55 @@ process.stdout.write('\nConnectors are exactly hit-testable\n');
     targets.every((t) => Number(t.getAttribute('width')) >= 19), '');
 }
 
-process.stdout.write(`\n${pass} ok, ${fail} failed\n`);
+process.stdout.write('\nModule layout never overlaps\n');
+{
+  const { PatchView, COLUMN_WIDTH } = await import('../src/ui/patchView.ts');
+
+  // Two columns of tall modules — the case that overlapped when ypos was
+  // treated as an absolute row.
+  const modules = [
+    { area: 'voice' as const, type: 20, index: 1, x: 0, y: 0 }, // ADSR, 5 units
+    { area: 'voice' as const, type: 4,  index: 2, x: 0, y: 1 },
+    { area: 'voice' as const, type: 20, index: 3, x: 0, y: 2 },
+    { area: 'voice' as const, type: 20, index: 4, x: 1, y: 0 },
+    { area: 'voice' as const, type: 4,  index: 5, x: 1, y: 1 },
+  ].filter((m) => catalogue.modules.has(m.type));
+
+  const view = new PatchView({
+    patch: { name: 'T', modules, cables: [], parameters: [], sections: new Map() },
+    area: 'voice', catalogue, theme,
+  });
+
+  // Read back the laid-out boxes from the rendered transforms.
+  const boxes = Array.from(view.element.querySelectorAll('g.patch-module')).map((g) => {
+    const [, x, y] = /translate\(([-\d.]+) ([-\d.]+)\)/.exec(g.getAttribute('transform') ?? '') ?? [];
+    const svg = g.querySelector('svg');
+    return {
+      x: Number(x), y: Number(y),
+      w: COLUMN_WIDTH,
+      h: Number(svg?.getAttribute('height') ?? 0) + 15,
+    };
+  });
+
+  check('every module is laid out', boxes.length === modules.length, `${boxes.length}`);
+
+  let overlaps = 0;
+  for (let i = 0; i < boxes.length; i++) {
+    for (let j = i + 1; j < boxes.length; j++) {
+      const a = boxes[i];
+      const b = boxes[j];
+      if (a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h) overlaps++;
+    }
+  }
+  check('no two modules overlap', overlaps === 0, `${overlaps} overlapping pairs`);
+
+  const columnZero = boxes.filter((b) => b.x === 0).sort((a, b) => a.y - b.y);
+  check('a column stacks in order with gaps',
+    columnZero.every((b, i) => i === 0 || b.y >= columnZero[i - 1].y + columnZero[i - 1].h),
+    columnZero.map((b) => `${b.y}+${b.h}`).join(' '));
+}
+
+process.stdout.write(`
+${pass} ok, ${fail} failed
+`);
 process.exit(fail === 0 ? 0 : 1);

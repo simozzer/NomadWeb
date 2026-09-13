@@ -78,10 +78,6 @@ export class ModuleView {
       }),
     );
 
-    const title = el('text', { x: 6, y: 11, class: 'module-title' });
-    title.textContent = def.name;
-    this.element.appendChild(title);
-
     for (const widget of theme.widgets) this.renderWidget(widget);
   }
 

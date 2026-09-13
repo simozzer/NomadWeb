@@ -16,6 +16,20 @@ const SVG_NS = 'http://www.w3.org/2000/svg';
 export const COLUMN_WIDTH = 255;
 export const ROW_HEIGHT = 15;
 
+/**
+ * Layout spacing.
+ *
+ * `ypos` orders a module within its column rather than giving it an absolute
+ * row: modules here are 2 to 6 units tall, and treating `ypos` as a row makes
+ * them overlap, which the device's own editor plainly does not do. Stacking by
+ * cumulative height in `ypos` order is right either way — it preserves the
+ * order and cannot overlap.
+ */
+const COLUMN_GAP = 12;
+const MODULE_GAP = 6;
+/** Strip above each panel carrying its name, so the label never sits on the artwork. */
+const MODULE_HEADER = 15;
+
 /** Cable colours, indexed by the 3-bit `color` field, matching def-signal. */
 const CABLE_COLORS = [
   '#CB4F4F', // audio
@@ -82,6 +96,11 @@ interface Placed {
   group: SVGGElement;
   view: ModuleView;
   heightPx: number;
+  /** Laid-out position in canvas units, including the title strip. */
+  pixelX: number;
+  pixelY: number;
+  /** Set while dragging, to order the module against its new neighbours. */
+  dragY?: number;
 }
 
 /**
@@ -120,6 +139,7 @@ export class PatchView {
     this.element.appendChild(this.root);
 
     this.renderModules();
+    this.layout();
     this.renderCables();
     this.attachPanZoom();
     this.applyTransform();
@@ -151,8 +171,8 @@ export class PatchView {
 
     const size = widget.size ?? 13;
     return {
-      x: placed.module.x * COLUMN_WIDTH + widget.x + size / 2,
-      y: placed.module.y * ROW_HEIGHT + widget.y + size / 2,
+      x: placed.pixelX + widget.x + size / 2,
+      y: placed.pixelY + MODULE_HEADER + widget.y + size / 2,
     };
   }
 
@@ -287,16 +307,30 @@ export class PatchView {
           this.options.onParameterChange?.(module, parameter, value),
       });
 
+      // The name goes in a strip above the panel. Drawn on the panel it landed
+      // on the artwork's own legends — "FilterE" over "Freq", and so on.
+      const strip = el('rect', {
+        x: 0, y: 0, width: layout.width, height: MODULE_HEADER,
+        rx: 3, fill: 'rgba(0,0,0,.45)', class: 'module-strip',
+      });
+      const title = el('text', { x: 6, y: 11, class: 'module-name' });
+      title.textContent = module.name || def.name;
+      const badge = el('text', {
+        x: layout.width - 6, y: 11, class: 'module-badge', 'text-anchor': 'end',
+      });
+      badge.textContent = `#${module.index}`;
+      group.append(strip, title, badge);
+
       const nested = view.element;
       nested.setAttribute('x', '0');
-      nested.setAttribute('y', '0');
+      nested.setAttribute('y', String(MODULE_HEADER));
       group.appendChild(nested);
       group.style.cursor = 'move';
 
-      const placed: Placed = { module, def, group, view, heightPx: layout.height };
+      const placed: Placed = {
+        module, def, group, view, heightPx: layout.height, pixelX: 0, pixelY: 0,
+      };
       this.placed.set(module.index, placed);
-
-      this.positionModule(placed);
       this.moduleLayer.appendChild(group);
 
       // Apply the patch's stored values, positionally per modules.xml order.
@@ -308,11 +342,59 @@ export class PatchView {
     }
   }
 
+  /**
+   * Packs each column top to bottom in `ypos` order.
+   *
+   * Nothing can overlap because every module's position is the running total of
+   * the heights above it, rather than a coordinate that might collide.
+   */
+  private layout(): void {
+    const columns = new Map<number, Placed[]>();
+    for (const placed of this.placed.values()) {
+      const column = columns.get(placed.module.x) ?? [];
+      column.push(placed);
+      columns.set(placed.module.x, column);
+    }
+
+    for (const [column, members] of columns) {
+      members.sort((a, b) => (a.dragY ?? a.module.y) - (b.dragY ?? b.module.y));
+      let y = 0;
+      for (const placed of members) {
+        placed.pixelX = column * (COLUMN_WIDTH + COLUMN_GAP);
+        placed.pixelY = y;
+        y += MODULE_HEADER + placed.heightPx + MODULE_GAP;
+        this.positionModule(placed);
+      }
+    }
+  }
+
+  /** Writes `ypos` back as the module's rank in its column. */
+  private renumberColumns(): PatchModule[] {
+    const changed: PatchModule[] = [];
+    const columns = new Map<number, Placed[]>();
+
+    for (const placed of this.placed.values()) {
+      const column = columns.get(placed.module.x) ?? [];
+      column.push(placed);
+      columns.set(placed.module.x, column);
+    }
+
+    for (const members of columns.values()) {
+      members.sort((a, b) => (a.dragY ?? a.module.y) - (b.dragY ?? b.module.y));
+      members.forEach((placed, rank) => {
+        if (placed.module.y !== rank) {
+          placed.module.y = rank;
+          changed.push(placed.module);
+        }
+        placed.dragY = undefined;
+      });
+    }
+
+    return changed;
+  }
+
   private positionModule(placed: Placed): void {
-    placed.group.setAttribute(
-      'transform',
-      `translate(${placed.module.x * COLUMN_WIDTH} ${placed.module.y * ROW_HEIGHT})`,
-    );
+    placed.group.setAttribute('transform', `translate(${placed.pixelX} ${placed.pixelY})`);
   }
 
   /** The module whose panel covers a canvas point, if any. */
@@ -320,16 +402,22 @@ export class PatchView {
     // Later modules sit above earlier ones, so search in reverse.
     const all = Array.from(this.placed.values()).reverse();
     for (const placed of all) {
-      const left = placed.module.x * COLUMN_WIDTH;
-      const top = placed.module.y * ROW_HEIGHT;
-      if (x >= left && x <= left + COLUMN_WIDTH && y >= top && y <= top + placed.heightPx) {
+      const left = placed.pixelX;
+      const top = placed.pixelY;
+      const height = MODULE_HEADER + placed.heightPx;
+      if (x >= left && x <= left + COLUMN_WIDTH && y >= top && y <= top + height) {
         return placed;
       }
     }
     return null;
   }
 
-  /** Drags a module anywhere on its body, snapped to the patch grid. */
+  /**
+   * Drags a module into another column or another place in its own.
+   *
+   * The module reflows with its neighbours as it moves, so what you see during
+   * the drag is what the layout will settle to.
+   */
   private beginModuleDrag(event: PointerEvent, placed: Placed): void {
     event.preventDefault();
     this.element.setPointerCapture(event.pointerId);
@@ -338,16 +426,20 @@ export class PatchView {
     const start = this.toCanvas(event);
     const originX = placed.module.x;
     const originY = placed.module.y;
+    const originPixelY = placed.pixelY;
+    placed.group.classList.add('patch-module--dragging');
 
     const move = (moveEvent: PointerEvent) => {
       const now = this.toCanvas(moveEvent);
-      // Snap to the grid the device itself stores positions on.
-      const x = Math.max(0, originX + Math.round((now.x - start.x) / COLUMN_WIDTH));
-      const y = Math.max(0, originY + Math.round((now.y - start.y) / ROW_HEIGHT));
-      if (x === placed.module.x && y === placed.module.y) return;
-      placed.module.x = x;
-      placed.module.y = y;
-      this.positionModule(placed);
+      placed.module.x = Math.max(
+        0,
+        originX + Math.round((now.x - start.x) / (COLUMN_WIDTH + COLUMN_GAP)),
+      );
+      // A continuous position decides the rank; the layout turns it back into
+      // a discrete slot. Half a module's height of lead makes the swap land
+      // where the pointer is rather than lagging behind it.
+      placed.dragY = originPixelY + (now.y - start.y) + placed.heightPx / 2;
+      this.layout();
       this.renderCables();
     };
 
@@ -355,8 +447,19 @@ export class PatchView {
       this.element.releasePointerCapture(event.pointerId);
       this.element.removeEventListener('pointermove', move);
       this.element.removeEventListener('pointerup', up);
-      if (placed.module.x !== originX || placed.module.y !== originY) {
-        this.options.onModuleMove?.(placed.module, placed.module.x, placed.module.y);
+      placed.group.classList.remove('patch-module--dragging');
+
+      const moved = this.renumberColumns();
+      this.layout();
+      this.renderCables();
+
+      // Reordering a column shifts its other modules too, so every changed
+      // position is reported, not just the one that was dragged.
+      const changed = placed.module.x !== originX || placed.module.y !== originY
+        ? [placed.module, ...moved.filter((m) => m !== placed.module)]
+        : moved;
+      for (const module of changed) {
+        this.options.onModuleMove?.(module, module.x, module.y);
       }
     };
 
@@ -637,8 +740,8 @@ export class PatchView {
     let width = 1;
     let height = 1;
     for (const placed of this.placed.values()) {
-      width = Math.max(width, (placed.module.x + 1) * COLUMN_WIDTH);
-      height = Math.max(height, placed.module.y * ROW_HEIGHT + placed.heightPx);
+      width = Math.max(width, placed.pixelX + COLUMN_WIDTH);
+      height = Math.max(height, placed.pixelY + MODULE_HEADER + placed.heightPx);
     }
     return { width, height };
   }
