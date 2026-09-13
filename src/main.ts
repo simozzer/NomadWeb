@@ -385,8 +385,69 @@ async function main(): Promise<void> {
     });
   }
 
-  $('fit-view').addEventListener('click', () => {
-    patchView?.fit(canvasHost.clientWidth, canvasHost.clientHeight);
+  const zoomLevel = $('zoom-level');
+  const fitView = () => patchView?.fit(canvasHost.clientWidth, canvasHost.clientHeight);
+
+  $('fit-view').addEventListener('click', fitView);
+  $('zoom-reset').addEventListener('click', () =>
+    patchView?.resetZoom(canvasHost.clientWidth, canvasHost.clientHeight));
+  $('zoom-in').addEventListener('click', () =>
+    patchView?.zoomBy(1.25, canvasHost.clientWidth, canvasHost.clientHeight));
+  $('zoom-out').addEventListener('click', () =>
+    patchView?.zoomBy(1 / 1.25, canvasHost.clientWidth, canvasHost.clientHeight));
+
+  // ---- sidebar splitter ----
+  const SIDEBAR_KEY = 'nomad-web.sidebar';
+  const app = document.querySelector('.app') as HTMLElement;
+  const splitter = $('splitter');
+  const MIN_SIDEBAR = 220;
+  const MAX_SIDEBAR = 640;
+
+  const setSidebarWidth = (px: number, persist = true) => {
+    const width = Math.round(Math.min(MAX_SIDEBAR, Math.max(0, px)));
+    app.style.gridTemplateColumns = `${width}px 6px 1fr`;
+    $('sidebar').hidden = width === 0;
+    if (persist) {
+      try { localStorage.setItem(SIDEBAR_KEY, String(width)); } catch { /* not essential */ }
+    }
+  };
+
+  const storedWidth = Number(localStorage.getItem(SIDEBAR_KEY) ?? NaN);
+  setSidebarWidth(Number.isFinite(storedWidth) ? storedWidth : 320, false);
+
+  splitter.addEventListener('pointerdown', (event: PointerEvent) => {
+    event.preventDefault();
+    splitter.setPointerCapture(event.pointerId);
+    splitter.classList.add('splitter--active');
+
+    const move = (moveEvent: PointerEvent) => {
+      const width = moveEvent.clientX - app.getBoundingClientRect().left;
+      // Snap shut rather than leaving an unusably narrow sidebar.
+      setSidebarWidth(width < MIN_SIDEBAR / 2 ? 0 : Math.max(MIN_SIDEBAR, width));
+    };
+    const up = () => {
+      splitter.releasePointerCapture(event.pointerId);
+      splitter.classList.remove('splitter--active');
+      splitter.removeEventListener('pointermove', move);
+      splitter.removeEventListener('pointerup', up);
+    };
+    splitter.addEventListener('pointermove', move);
+    splitter.addEventListener('pointerup', up);
+  });
+
+  // Double-click collapses, or restores a sensible width.
+  splitter.addEventListener('dblclick', () => {
+    const current = $('sidebar').getBoundingClientRect().width;
+    setSidebarWidth(current < 40 ? 320 : 0);
+  });
+
+  splitter.addEventListener('keydown', (event: KeyboardEvent) => {
+    const current = $('sidebar').getBoundingClientRect().width;
+    const step = event.shiftKey ? 48 : 16;
+    if (event.key === 'ArrowLeft') setSidebarWidth(Math.max(MIN_SIDEBAR, current - step));
+    else if (event.key === 'ArrowRight') setSidebarWidth(current + step);
+    else return;
+    event.preventDefault();
   });
 
   // The canvas now sizes itself to the workspace, so a window or sidebar
@@ -469,8 +530,13 @@ async function main(): Promise<void> {
       },
     });
 
+    patchView.onZoomChanged = (scale) => {
+      zoomLevel.textContent = `${Math.round(scale * 100)}%`;
+    };
     canvasHost.appendChild(patchView.element);
-    patchView.fit(canvasHost.clientWidth || 900, canvasHost.clientHeight || 460);
+    // Fit once the element has been laid out, so the measurements are real.
+    requestAnimationFrame(() =>
+      patchView?.fit(canvasHost.clientWidth || 900, canvasHost.clientHeight || 460));
 
     const inArea = patch.modules.filter((m) => m.area === area);
     const undrawn = inArea.filter((m) => {

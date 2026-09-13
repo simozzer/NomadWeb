@@ -12,6 +12,13 @@
 
 * { box-sizing: border-box; }
 
+/*
+ * The hidden attribute only sets display:none in the UA sheet, so any author
+ * display rule beats it. Several panels here set display (flex/grid), which
+ * left them permanently visible.
+ */
+[hidden] { display: none !important; }
+
 html, body { height: 100%; }
 
 body {
@@ -49,7 +56,7 @@ body {
 .app {
   flex: 1;
   display: grid;
-  grid-template-columns: minmax(300px, 340px) 1fr;
+  grid-template-columns: 320px 6px 1fr;
   min-height: 0;
 }
 
@@ -344,3 +351,32 @@ svg.patch-canvas { display: block; width: 100%; height: 100%; cursor: grab; }
 
 .cable { cursor: crosshair; }
 .cables path { pointer-events: stroke; }
+
+/* ---- sidebar splitter ---- */
+
+.splitter {
+  background: var(--panel-edge);
+  cursor: col-resize;
+  position: relative;
+  transition: background .12s;
+}
+
+/* A thin bar is hard to grab, so widen the target without widening the line. */
+.splitter::after {
+  content: '';
+  position: absolute;
+  inset: 0 -4px;
+}
+
+.splitter:hover,
+.splitter:focus-visible,
+.splitter--active { background: var(--accent); outline: none; }
+
+.zoom-controls { display: flex; align-items: center; gap: 4px; }
+.zoom-controls button { padding: 4px 9px; }
+#zoom-level {
+  min-width: 48px;
+  text-align: center;
+  font: 11px/1 ui-monospace, Consolas, monospace;
+  color: var(--ink-dim);
+}

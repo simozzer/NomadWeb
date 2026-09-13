@@ -99,6 +99,16 @@
         </section>
       </aside>
 
+      <div
+        class="splitter"
+        id="splitter"
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Resize sidebar"
+        tabindex="0"
+        title="Drag to resize · double-click to collapse"
+      ></div>
+
       <main class="workspace">
         <section class="editor" id="current-patch" hidden>
           <header class="editor-bar">
@@ -109,9 +119,15 @@
             <span class="count" id="loaded-summary"></span>
             <div class="spacer"></div>
             <span class="hint hint--inline">
-              Drag a module anywhere on its body · connector to connector to patch · click a cable to disconnect · double-click a connector to clear it
+              Drag a module by its body · connector to connector to patch · click a cable to disconnect
             </span>
-            <button id="fit-view" type="button">Fit</button>
+            <div class="zoom-controls">
+              <button id="zoom-out" type="button" title="Zoom out">&minus;</button>
+              <span id="zoom-level">100%</span>
+              <button id="zoom-in" type="button" title="Zoom in">+</button>
+              <button id="fit-view" type="button">Fit</button>
+              <button id="zoom-reset" type="button" title="Actual size">1:1</button>
+            </div>
           </header>
           <p class="hint" id="loaded-hint"></p>
           <div id="patch-canvas-host" class="canvas-host"></div>

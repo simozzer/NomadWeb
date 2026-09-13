@@ -487,6 +487,7 @@ export class PatchView {
       'transform',
       `translate(${this.view.x} ${this.view.y}) scale(${this.view.scale})`,
     );
+    this.onZoomChanged?.(this.view.scale);
   }
 
   private attachPanZoom(): void {
@@ -631,22 +632,64 @@ export class PatchView {
     this.element.addEventListener('pointerup', up);
   }
 
-  /** Fits the whole patch in the given viewport size. */
-  fit(width: number, height: number, padding = 24): void {
-    let maxX = 1;
-    let maxY = 1;
+  /** Bounding box of the placed modules, in canvas units. */
+  private contentSize(): { width: number; height: number } {
+    let width = 1;
+    let height = 1;
     for (const placed of this.placed.values()) {
-      maxX = Math.max(maxX, (placed.module.x + 1) * COLUMN_WIDTH);
-      maxY = Math.max(maxY, placed.module.y * ROW_HEIGHT + placed.heightPx);
+      width = Math.max(width, (placed.module.x + 1) * COLUMN_WIDTH);
+      height = Math.max(height, placed.module.y * ROW_HEIGHT + placed.heightPx);
     }
+    return { width, height };
+  }
+
+  /**
+   * Fits the patch to the viewport and centres it.
+   *
+   * Scaling up is allowed: a small patch left at 100% wastes most of a large
+   * canvas. The ceiling keeps panels from becoming comically large.
+   */
+  fit(width: number, height: number, padding = 20): void {
+    if (width <= 0 || height <= 0) return;
+    const content = this.contentSize();
+
     const scale = Math.min(
-      (width - padding * 2) / maxX,
-      (height - padding * 2) / maxY,
-      1,
+      (width - padding * 2) / content.width,
+      (height - padding * 2) / content.height,
+      2.5,
     );
-    this.view.scale = Math.max(0.2, scale);
-    this.view.x = padding;
-    this.view.y = padding;
+    this.view.scale = Math.max(0.15, scale);
+
+    // Centre whatever space is left over.
+    this.view.x = (width - content.width * this.view.scale) / 2;
+    this.view.y = (height - content.height * this.view.scale) / 2;
+    this.applyTransform();
+  }
+
+  /** Resets to 100% with the patch centred, for the "actual size" case. */
+  resetZoom(width: number, height: number): void {
+    const content = this.contentSize();
+    this.view.scale = 1;
+    this.view.x = Math.max(20, (width - content.width) / 2);
+    this.view.y = Math.max(20, (height - content.height) / 2);
+    this.applyTransform();
+  }
+
+  get zoom(): number {
+    return this.view.scale;
+  }
+
+  /** Fired whenever the zoom changes, for the toolbar readout. */
+  onZoomChanged: ((scale: number) => void) | null = null;
+
+  /** Steps the zoom about the centre of the viewport. */
+  zoomBy(factor: number, width: number, height: number): void {
+    const scale = Math.min(3, Math.max(0.15, this.view.scale * factor));
+    const cx = width / 2;
+    const cy = height / 2;
+    this.view.x = cx - ((cx - this.view.x) / this.view.scale) * scale;
+    this.view.y = cy - ((cy - this.view.y) / this.view.scale) * scale;
+    this.view.scale = scale;
     this.applyTransform();
   }
 
