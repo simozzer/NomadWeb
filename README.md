@@ -4,6 +4,9 @@ A browser-based editor for the Clavia Nord Modular, driving the hardware over We
 
 ![Nomad Web editing a patch on a Micro Modular: the module tabs, the knob assignments, the DSP load meter and the patch canvas](docs/screenshot.png)
 
+**Use it in your browser: <https://simozzer.github.io/NomadWeb/>** — Chrome or Edge,
+with the Nord connected over MIDI. It asks for permission to use MIDI with SysEx.
+
 This is a port of [Nomad](http://nmedit.sourceforge.net/) 0.3.2 (Christian Schneider,
 NMedit project). Nomad separated the *description* of the Nord Modular from its Java
 renderer, and that separation is what makes a browser port tractable: the protocol, the
@@ -16,7 +19,11 @@ over here unchanged.
 npm install
 npm run dev      # http://localhost:5173
 npm test         # protocol, model and layout checks
+npm run build    # static site in dist/, which runs from any folder
 ```
+
+Every push to `main` runs the checks, builds, and publishes to GitHub Pages
+(`.github/workflows/pages.yml`).
 
 Web MIDI with SysEx needs a **secure context** — `localhost` during development, HTTPS
 when deployed — and a permission grant. The Nord Modular is driven entirely by SysEx, so

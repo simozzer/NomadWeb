@@ -311,7 +311,7 @@ export class PatchView {
     const view = new ModuleView({
       def,
       theme: layout,
-      imageBase: '/data/theme-images',
+      imageBase: 'data/theme-images',
       title: module.name || def.name,
       format: this.options.format,
       onParameterChange: (parameter, value) =>

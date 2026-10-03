@@ -89,12 +89,12 @@ async function fetchText(url: string): Promise<string> {
 async function main(): Promise<void> {
   // ---- data ----
   const [modulesXml, themeXml, nmformatSrc, midiGrammar, patchGrammar, toolbarJson] = await Promise.all([
-    fetchText('/data/modules.xml'),
-    fetchText('/data/classic-theme.xml'),
-    fetchText('/data/nmformat.js'),
-    fetchText('/data/midi.pdl2'),
-    fetchText('/data/patch.pdl2'),
-    fetchText('/data/module-toolbar.json'),
+    fetchText('data/modules.xml'),
+    fetchText('data/classic-theme.xml'),
+    fetchText('data/nmformat.js'),
+    fetchText('data/midi.pdl2'),
+    fetchText('data/patch.pdl2'),
+    fetchText('data/module-toolbar.json'),
   ]);
   const toolbarLayout = JSON.parse(toolbarJson) as ToolbarLayout;
 
@@ -1458,7 +1458,7 @@ async function main(): Promise<void> {
       element.appendChild(new ModuleView({
         def,
         theme: moduleTheme,
-        imageBase: '/data/theme-images',
+        imageBase: 'data/theme-images',
         title: def.name,
         format: (parameter, value) => formatters.format(parameter.formatter, value),
         onParameterChange: (parameter, value) => onParameterChange(def, parameter, value),
@@ -1669,7 +1669,7 @@ async function main(): Promise<void> {
     const ghost = document.createElement('div');
     ghost.className = 'module-ghost';
     ghost.appendChild(new ModuleView({
-      def, theme: moduleTheme, imageBase: '/data/theme-images', title: def.name,
+      def, theme: moduleTheme, imageBase: 'data/theme-images', title: def.name,
     }).element);
     ghost.style.transform = `scale(${scale})`;
     document.body.appendChild(ghost);
@@ -1730,7 +1730,7 @@ async function main(): Promise<void> {
   const toolbar = new ModuleToolbar({
     layout: toolbarLayout,
     catalogue,
-    dataBase: '/data',
+    dataBase: 'data',
     onPick: openPreview,
     onDragStart: dragModule,
   });
