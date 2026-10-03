@@ -130,6 +130,18 @@ process.stdout.write('\nA knob turned on the device (KnobChange / ParameterChang
   }
 }
 
+process.stdout.write('\nA patch chosen on the device (NewPatchInSlot)\n');
+{
+  const bytes = encoder.encode({
+    cc: 0x14, slot: 0, data: { pid: 12, sc: 0x38, data: { slot: 0, pid: 12 } },
+  });
+  const decoded = decoder.decode(bytes, { validateComputed: true });
+  const info = decoded.root.items.get('data') as any;
+  check('tagged newPatchInSlot, with the slot and pid where the editor reads them',
+    decoded.messageId === 'newPatchInSlot' && decoded.root.values.get('slot') === 0 &&
+      info?.values.get('pid') === 12, decoded.messageId);
+}
+
 process.stdout.write('\nKnob map in a patch (KnobMapDump)\n');
 {
   const patchEncoder = new Pdl2Encoder(parsePdl2(read('patch.pdl2')));

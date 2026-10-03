@@ -784,7 +784,18 @@ export class NordModular {
     // pid are acknowledged and ignored, so wait for the device to announce it
     // rather than guessing at a fixed delay.
     await this.waitForFreshPid(slot, 1200);
+    return this.fetchPatch(slot, { windowMs });
+  }
 
+  /**
+   * Reads back whatever patch is in a slot now — `NmSlot.requestPatch`, which
+   * Nomad runs when the device reports a new patch in a slot (one chosen on
+   * its own front panel, say).
+   */
+  async fetchPatch(
+    slot: number,
+    { windowMs = 5000 }: { windowMs?: number } = {},
+  ): Promise<PatchDumpReport> {
     // Stage 1: RequestPatch is a handshake, not a dump. It returns an ACK whose
     // pid1 is the transfer's patch id — ReqPatchWorker takes exactly this and
     // hands it to GetPatchWorker.

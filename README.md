@@ -87,13 +87,16 @@ truth — including the checksum rule, which the grammar expresses declaratively
   shows at 41.4%. A module that would take the total past 100% is refused
 - Knobs follow the hardware: a knob turned on the device (`KnobChange`, or a
   `ParameterChange`) turns the matching control on screen
+- The editor follows the device: a patch chosen on its front panel
+  (`NewPatchInSlot`, NMInfo sc 0x38) is read back and shown, as Nomad's
+  NmMessageHandler does; the announcement a list load causes is not re-read
 - All 45 value formatters compile and evaluate
 - Hardware knob assignments: read from the patch's knob map, shown as a strip
   above the canvas and a badge on each assigned control; right-click a control
   to put it on a knob, move it, or remove it (`KnobAssignmentMessage`, sc 0x25/0x26).
   On a Micro Modular only its three knobs are offered
 
-218 checks pass (`npm test`).
+219 checks pass (`npm test`).
 
 **Not yet done**
 

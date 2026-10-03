@@ -1027,6 +1027,122 @@ async function main(): Promise<void> {
     if (stored) stored[position] = value;
   });
 
+  /** The device's patch id for the patch on screen, to recognise a change. */
+  let shownPid: number | null = null;
+
+  /**
+   * Puts a fetched patch on screen, or explains why nothing came back.
+   * Returns the patch, or null when the device sent no patch data.
+   */
+  function showFetched(report: PatchDumpReport, slotName: string): Patch | null {
+    log(
+      'info',
+      `patch fetch via ${report.method}: ${report.packets} packets in ${report.runs} run(s), ` +
+        `${report.payloadBytes} payload bytes, first=${report.sawFirst} last=${report.sawLast}` +
+        (report.otherMessages.length
+          ? `, also saw: ${[...new Set(report.otherMessages)].join(', ')}`
+          : ''),
+    );
+
+    if (report.payloadBytes === 0) {
+      showFetchDiagnostic(report, slotName);
+      return null;
+    }
+
+    log('info', `part sizes: ${report.parts.map((p) => p.length).join(', ')} bytes`);
+
+    const patch = patchReader.readParts(report.parts);
+    currentPatch = patch;
+    log(
+      'info',
+      `patch "${patch.name}": sections ${[...patch.sections.keys()].sort((a, b) => a - b).join(', ')} · ` +
+        `${patch.modules.length} modules, ${patch.cables.length} cables`,
+    );
+
+    // ypos is an absolute row (Nomad's PBasicModuleMetrics). A patch whose
+    // columns read as consecutive ranks was most likely rewritten by an
+    // earlier version of this editor, and will overlap in the original.
+    const scheme = describeLayoutScheme(patch);
+    log('info', `ypos looks ${scheme.verdict} — ${scheme.detail}`);
+
+    renderLoadedPatch();
+    return patch;
+  }
+
+  // ---- following the device: a patch chosen on the Nord itself ----
+
+  let followTimer: ReturnType<typeof setTimeout> | undefined;
+  let followPid: number | null = null;
+
+  /**
+   * The device says a slot has a new patch: `NewPatchInSlot` (NMInfo, sc
+   * 0x38), sent when one is chosen on its own front panel. Nomad's
+   * NmMessageHandler answers it by reading the whole patch back
+   * (`NmSlot.requestPatch`), and so does this.
+   *
+   * Loading from the patch list makes the device send one too; that is
+   * ignored while the load runs, and afterwards because it names the patch
+   * already on screen.
+   */
+  nord.addListener((message) => {
+    if (message.messageId !== 'newPatchInSlot' || !connected) return;
+    const slot = message.root.values.get('slot');
+    if (slot !== Number(slotSelect.value)) return;
+    const info = message.root.items.get('data');
+    if (!info || Array.isArray(info)) return;
+    const pid = info.values.get('pid');
+    if (pid === undefined || (pid === shownPid && !loading)) return;
+    followPid = pid;
+    // A run of these can arrive together; read the patch back once they settle.
+    clearTimeout(followTimer);
+    followTimer = setTimeout(() => void followDevice(), 250);
+  });
+
+  async function followDevice(): Promise<void> {
+    if (loading) {
+      // A load from the list is running. When it ends, look again: if the
+      // device's patch is still not the one shown, it changed meanwhile.
+      followTimer = setTimeout(() => {
+        if (followPid !== null && followPid !== shownPid) void followDevice();
+      }, 400);
+      return;
+    }
+    loading = true;
+    const slot = Number(slotSelect.value);
+    const slotName = slotSelect.selectedOptions[0]?.textContent ?? `slot ${slot}`;
+    const device = nord.identity?.deviceName ?? 'Nord';
+    patchHint.textContent = `The ${device} changed patch; reading it…`;
+    log('info', `new patch in ${slotName} on the device (pid ${followPid}); reading it back`);
+    showEditor(true);
+
+    // Recorded as the id the device announced: the transfer handshake reports
+    // an id of its own, which need not be the same.
+    const announced = followPid;
+    try {
+      const report = await nord.fetchPatch(slot);
+      const patch = showFetched(report, slotName);
+      shownPid = announced;
+      if (!patch) {
+        patchHint.textContent = `The ${device} changed patch, but sent no patch data for it.`;
+        return;
+      }
+      // The list only knows names, so mark the entry when exactly one matches.
+      const rows = Array.from(patchListEl.querySelectorAll<HTMLElement>('.patch-row'));
+      for (const row of rows) row.classList.remove('patch-row--active');
+      const matches = rows.filter((row) => row.lastElementChild?.textContent === patch.name);
+      if (matches.length === 1) matches[0].classList.add('patch-row--active');
+      patchHint.textContent =
+        `The ${device} switched to "${patch.name || '(unnamed)'}" — ` +
+        `${patch.modules.length} modules, ${patch.cables.length} cables.`;
+    } catch (error) {
+      clearCanvases();
+      loadedHint.textContent = `The ${device} changed patch, but reading it failed: ${(error as Error).message}`;
+      log('err', (error as Error).message);
+    } finally {
+      loading = false;
+    }
+  }
+
   async function selectPatch(entry: PatchListEntry, row: HTMLElement): Promise<void> {
     if (loading) return;
     loading = true;
@@ -1043,41 +1159,18 @@ async function main(): Promise<void> {
     // The panel is shown up front so a failure is visible rather than silent.
     showEditor(true);
 
+    // Loading makes the device announce the new patch; whatever id it names
+    // during the load is the one now on screen.
+    followPid = null;
     try {
       const report = await nord.loadAndFetchPatch(slot, entry.bank, entry.position);
-      log(
-        'info',
-        `patch fetch via ${report.method}: ${report.packets} packets in ${report.runs} run(s), ` +
-          `${report.payloadBytes} payload bytes, first=${report.sawFirst} last=${report.sawLast}` +
-          (report.otherMessages.length
-            ? `, also saw: ${[...new Set(report.otherMessages)].join(', ')}`
-            : ''),
-      );
-
-      if (report.payloadBytes === 0) {
-        showFetchDiagnostic(report, slotName);
+      const patch = showFetched(report, slotName);
+      shownPid = followPid ?? nord.getActivePid(slot);
+      if (!patch) {
         patchHint.textContent =
           `Loaded "${entry.name}" into ${slotName}, but the device sent no patch data.`;
         return;
       }
-
-      log('info', `part sizes: ${report.parts.map((p) => p.length).join(', ')} bytes`);
-
-      const patch = patchReader.readParts(report.parts);
-      currentPatch = patch;
-      log(
-        'info',
-        `patch "${patch.name}": sections ${[...patch.sections.keys()].sort((a, b) => a - b).join(', ')} · ` +
-          `${patch.modules.length} modules, ${patch.cables.length} cables`,
-      );
-
-      // ypos is an absolute row (Nomad's PBasicModuleMetrics). A patch whose
-      // columns read as consecutive ranks was most likely rewritten by an
-      // earlier version of this editor, and will overlap in the original.
-      const scheme = describeLayoutScheme(patch);
-      log('info', `ypos looks ${scheme.verdict} — ${scheme.detail}`);
-
-      renderLoadedPatch();
       patchHint.textContent =
         `Loaded "${patch.name || entry.name}" into ${slotName} — ` +
         `${patch.modules.length} modules, ${patch.cables.length} cables.`;
