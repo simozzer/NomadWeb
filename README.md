@@ -2,6 +2,8 @@
 
 A browser-based editor for the Clavia Nord Modular, driving the hardware over Web MIDI.
 
+![Nomad Web editing a patch on a Micro Modular: the module tabs, the knob assignments, the DSP load meter and the patch canvas](docs/screenshot.png)
+
 This is a port of [Nomad](http://nmedit.sourceforge.net/) 0.3.2 (Christian Schneider,
 NMedit project). Nomad separated the *description* of the Nord Modular from its Java
 renderer, and that separation is what makes a browser port tractable: the protocol, the
