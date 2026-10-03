@@ -30,6 +30,103 @@ function check(label: string, ok: boolean, detail = '') {
 const catalogue = parseModuleCatalogue(read('modules.xml'));
 const theme = parseTheme(read('classic-theme.xml'));
 
+process.stdout.write('\nRight-click on a control opens the knob menu, and badges show\n');
+{
+  const def = catalogue.modules.get(20)!;           // ADSR
+  const layout = theme.modules.get('m20')!;
+  const menus: string[] = [];
+  const view = new ModuleView({
+    def, theme: layout, imageBase: '/data/theme-images',
+    onParameterMenu: (parameter) => menus.push(parameter.name),
+  });
+
+  const knob = view.element.querySelector('g.knob')!;
+  const event = new (document.defaultView as any).Event('contextmenu', { bubbles: true, cancelable: true });
+  knob.dispatchEvent(event);
+  check('a right-clicked knob reports its parameter', menus.length === 1, menus.join(','));
+  check('the browser menu is suppressed', event.defaultPrevented === true);
+
+  const knobs = Array.from(view.element.querySelectorAll('g.knob'));
+  const firstId = def.parameters.find((p) => p.name === menus[0])!.componentId;
+  view.setBadge(firstId, 'K2');
+  const badges = () => Array.from(view.element.querySelectorAll('g.knob-badge'));
+  check('a badge is drawn', badges().length === 1 && badges()[0].textContent === 'K2',
+    badges().map((b) => b.textContent).join(','));
+  check('the badge sits above the controls', view.element.lastElementChild === badges()[0]);
+  view.setBadge(firstId, 'K3');
+  check('re-badging replaces rather than stacks', badges().length === 1 && badges()[0].textContent === 'K3');
+  view.setBadge(firstId, null);
+  check('a null badge clears it', badges().length === 0);
+  check('every ADSR knob takes a menu', knobs.length === 4, `${knobs.length}`);
+}
+
+process.stdout.write('\nDeleting a module takes its cables with it\n');
+{
+  const { PatchView } = await import('../src/ui/patchView.ts');
+  const events: string[] = [];
+  const patch = {
+    name: 'T', parameters: [], knobs: new Map(), sections: new Map(),
+    modules: [
+      { area: 'voice' as const, type: 7, index: 1, x: 0, y: 0 },   // OscA
+      { area: 'voice' as const, type: 20, index: 2, x: 0, y: 6 },  // ADSR
+      { area: 'voice' as const, type: 4, index: 3, x: 1, y: 0 },   // 2Output
+    ],
+    cables: [
+      { area: 'voice' as const, color: 0, sourceModule: 1, sourceConnector: 0, sourceIsOutput: 1, destModule: 3, destConnector: 0 },
+      { area: 'voice' as const, color: 1, sourceModule: 2, sourceConnector: 0, sourceIsOutput: 1, destModule: 1, destConnector: 1 },
+      { area: 'voice' as const, color: 0, sourceModule: 2, sourceConnector: 0, sourceIsOutput: 1, destModule: 3, destConnector: 1 },
+    ],
+  };
+  const view = new PatchView({
+    patch, area: 'voice', catalogue, theme,
+    onCableDelete: (c) => events.push(`cable ${c.sourceModule}->${c.destModule}`),
+    onModuleDelete: (m) => events.push(`module ${m.index}`),
+    onModuleMenu: (m) => events.push(`menu ${m.index}`),
+    onParameterMenu: () => events.push('knob menu'),
+  });
+
+  const Event = (document.defaultView as any).Event;
+  const adsr = view.element.querySelector('g.patch-module[data-module-index="2"]')!;
+  adsr.querySelector('rect')!.dispatchEvent(new Event('contextmenu', { bubbles: true, cancelable: true }));
+  adsr.querySelector('g.knob')!.dispatchEvent(new Event('contextmenu', { bubbles: true, cancelable: true }));
+  check('right-click on the panel opens the module menu; on a knob, only the knob menu',
+    events.join(' | ') === 'menu 2 | knob menu', events.join(' | '));
+
+  events.length = 0;
+  check('removing a module reports success', view.removeModule(1) === true);
+  check('its cables are cut first, each reported, then the module',
+    events.join(' | ') === 'cable 1->3 | cable 2->1 | module 1', events.join(' | '));
+  check('it is gone from the canvas', !view.element.querySelector('g.patch-module[data-module-index="1"]'));
+  check('only cables not touching it remain', patch.cables.length === 1 && patch.cables[0].sourceModule === 2,
+    `${patch.cables.length} left`);
+  check('removing it again does nothing', view.removeModule(1) === false);
+}
+
+process.stdout.write('\nModule toolbar renders the original\'s tabs and groups\n');
+{
+  const { ModuleToolbar } = await import('../src/ui/moduleToolbar.ts');
+  const layout = JSON.parse(read('module-toolbar.json'));
+  const picked: string[] = [];
+  const toolbar = new ModuleToolbar({
+    layout, catalogue, dataBase: '/data', onPick: (def) => picked.push(def.name),
+  });
+  const tabs = Array.from(toolbar.element.querySelectorAll('.module-tab'));
+  check('ten tabs', tabs.length === 10, tabs.map((t) => t.textContent).join(' '));
+
+  toolbar.show('Env');
+  const row = () => Array.from(toolbar.element.querySelector('.module-row')!.children);
+  const env = row().map((n) => n.classList.contains('module-separator') ? '|' : n.getAttribute('aria-label'));
+  check('Env in the original order, with its separator',
+    env.join(' ') === 'ADSR AD-Env Mod-Env AHD Multi-Env | EnvFollower', env.join(' '));
+  check('buttons carry their icon',
+    row().filter((n) => n.tagName === 'BUTTON').every((b) => b.querySelector('img')?.getAttribute('src')?.startsWith('/data/img/icons/16x16/')));
+  check('only the chosen tab is selected',
+    tabs.filter((t) => t.getAttribute('aria-selected') === 'true').map((t) => t.textContent).join() === 'Env');
+
+  (row()[0] as HTMLElement).click();
+  check('a button reports its module', picked.join() === 'ADSR', picked.join());
+}
+
 process.stdout.write('\nControl gestures are kept off the canvas\n');
 {
   const def = catalogue.modules.get(20)!;           // ADSR
@@ -107,52 +204,55 @@ process.stdout.write('\nConnectors are exactly hit-testable\n');
     targets.every((t) => Number(t.getAttribute('width')) >= 19), '');
 }
 
-process.stdout.write('\nModule layout never overlaps\n');
+process.stdout.write('\nModules sit on the grid exactly as the original places them\n');
 {
-  const { PatchView, COLUMN_WIDTH } = await import('../src/ui/patchView.ts');
+  const { PatchView, COLUMN_WIDTH, ROW_HEIGHT } = await import('../src/ui/patchView.ts');
 
-  // Two columns of tall modules — the case that overlapped when ypos was
-  // treated as an absolute row.
+  // ypos is an absolute row (PBasicModuleMetrics: screenY = ypos * gridHeight),
+  // so gaps in the patch are real and must survive. ADSR is 5 rows tall.
   const modules = [
-    { area: 'voice' as const, type: 20, index: 1, x: 0, y: 0 }, // ADSR, 5 units
-    { area: 'voice' as const, type: 4,  index: 2, x: 0, y: 1 },
-    { area: 'voice' as const, type: 20, index: 3, x: 0, y: 2 },
-    { area: 'voice' as const, type: 20, index: 4, x: 1, y: 0 },
-    { area: 'voice' as const, type: 4,  index: 5, x: 1, y: 1 },
-  ].filter((m) => catalogue.modules.has(m.type));
+    { area: 'voice' as const, type: 20, index: 1, x: 0, y: 0 },
+    { area: 'voice' as const, type: 4,  index: 2, x: 0, y: 9 },  // gap of 4 rows
+    { area: 'voice' as const, type: 20, index: 3, x: 2, y: 3 },  // empty column 1
+  ];
+  const patch = { name: 'T', modules, cables: [], parameters: [], knobs: new Map(), sections: new Map() };
+  const view = new PatchView({ patch, area: 'voice', catalogue, theme });
 
-  const view = new PatchView({
-    patch: { name: 'T', modules, cables: [], parameters: [], sections: new Map() },
-    area: 'voice', catalogue, theme,
-  });
-
-  // Read back the laid-out boxes from the rendered transforms.
-  const boxes = Array.from(view.element.querySelectorAll('g.patch-module')).map((g) => {
+  const boxes = new Map(Array.from(view.element.querySelectorAll('g.patch-module')).map((g) => {
     const [, x, y] = /translate\(([-\d.]+) ([-\d.]+)\)/.exec(g.getAttribute('transform') ?? '') ?? [];
-    const svg = g.querySelector('svg');
-    return {
-      x: Number(x), y: Number(y),
-      w: COLUMN_WIDTH,
-      h: Number(svg?.getAttribute('height') ?? 0) + 15,
-    };
+    return [Number(g.getAttribute('data-module-index')), { x: Number(x), y: Number(y) }];
+  }));
+  check('every module is drawn', boxes.size === 3, `${boxes.size}`);
+  check('placed at xpos * 255, ypos * 15, with nothing added',
+    modules.every((m) => boxes.get(m.index)?.x === m.x * COLUMN_WIDTH &&
+      boxes.get(m.index)?.y === m.y * ROW_HEIGHT),
+    [...boxes].map(([i, b]) => `#${i}@${b.x},${b.y}`).join(' '));
+  check('the gap below the first module is kept', boxes.get(2)?.y === 135, `${boxes.get(2)?.y}`);
+  check('no title strip makes a module taller than its rows',
+    view.element.querySelectorAll('.module-strip').length === 0, '');
+  check('the module name is on the panel',
+    Array.from(view.element.querySelectorAll('text.panel-title')).map((t) => t.textContent).join(',') ===
+      'ADSR,2Output,ADSR', '');
+  check('nothing overlaps here', view.overlapCount === 0, `${view.overlapCount}`);
+
+  // A patch written as ranks (0, 1, 2) by the earlier version of this editor.
+  const ranked = [
+    { area: 'voice' as const, type: 20, index: 1, x: 0, y: 0 },
+    { area: 'voice' as const, type: 20, index: 2, x: 0, y: 1 },
+    { area: 'voice' as const, type: 4,  index: 3, x: 0, y: 2 },
+  ];
+  const sent: string[] = [];
+  const rankedView = new PatchView({
+    patch: { ...patch, modules: ranked }, area: 'voice', catalogue, theme,
+    onModuleMove: (m, x, y) => sent.push(`#${m.index}->${x},${y}`),
   });
-
-  check('every module is laid out', boxes.length === modules.length, `${boxes.length}`);
-
-  let overlaps = 0;
-  for (let i = 0; i < boxes.length; i++) {
-    for (let j = i + 1; j < boxes.length; j++) {
-      const a = boxes[i];
-      const b = boxes[j];
-      if (a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h) overlaps++;
-    }
-  }
-  check('no two modules overlap', overlaps === 0, `${overlaps} overlapping pairs`);
-
-  const columnZero = boxes.filter((b) => b.x === 0).sort((a, b) => a.y - b.y);
-  check('a column stacks in order with gaps',
-    columnZero.every((b, i) => i === 0 || b.y >= columnZero[i - 1].y + columnZero[i - 1].h),
-    columnZero.map((b) => `${b.y}+${b.h}`).join(' '));
+  check('rank-written positions are detected as overlapping', rankedView.overlapCount === 3,
+    `${rankedView.overlapCount} pairs`);
+  const moved = rankedView.fixOverlaps();
+  check('spreading them out stacks them in order, edge to edge',
+    ranked.map((m) => m.y).join() === '0,5,10' && moved === 2, `${ranked.map((m) => m.y).join()}`);
+  check('every move is sent to the device', sent.join(' ') === '#2->0,5 #3->0,10', sent.join(' '));
+  check('and then nothing overlaps', rankedView.overlapCount === 0, '');
 }
 
 process.stdout.write('\nPanel widgets sit inside their panel\n');

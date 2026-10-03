@@ -2,6 +2,14 @@ import type { ModuleCatalogue, ModuleDef, ParameterDef } from '../model/modules.
 import type { Theme } from '../model/theme.ts';
 import type { Patch, PatchArea, PatchCable, PatchModule } from '../model/patch.ts';
 import { controlParameters } from '../model/modules.ts';
+import {
+  MAX_GRID,
+  countOverlaps,
+  resolveMove,
+  resolveOverlaps,
+  type LayoutItem,
+  type Placement,
+} from '../model/layout.ts';
 import { ModuleView } from './moduleView.ts';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
@@ -11,24 +19,16 @@ const SVG_NS = 'http://www.w3.org/2000/svg';
  *
  * Every themed panel is 255px wide, and panel height is exactly 15px per unit
  * of the `height` attribute in modules.xml — verified across all 109 themed
- * modules. So a module at (xpos, ypos) sits at (xpos * 255, ypos * 15).
+ * modules. So a module at (xpos, ypos) sits at (xpos * 255, ypos * 15), with
+ * no spacing added: that is how the original editors draw it (Nomad's
+ * `PBasicModuleMetrics`, and the Clavia editor), so a patch arranged here
+ * looks the same there. See model/layout.ts.
  */
 export const COLUMN_WIDTH = 255;
 export const ROW_HEIGHT = 15;
 
-/**
- * Layout spacing.
- *
- * `ypos` orders a module within its column rather than giving it an absolute
- * row: modules here are 2 to 6 units tall, and treating `ypos` as a row makes
- * them overlap, which the device's own editor plainly does not do. Stacking by
- * cumulative height in `ypos` order is right either way — it preserves the
- * order and cannot overlap.
- */
-const COLUMN_GAP = 12;
-const MODULE_GAP = 6;
-/** Strip above each panel carrying its name, so the label never sits on the artwork. */
-const MODULE_HEADER = 15;
+/** Margin between the viewport edge and the grid origin when fitted. */
+const FIT_PADDING = 12;
 
 /** Cable colours, indexed by the 3-bit `color` field, matching def-signal. */
 const CABLE_COLORS = [
@@ -60,6 +60,14 @@ export interface PatchViewOptions {
   onCableAdd?: (from: ConnectorRef, to: ConnectorRef, color: number) => void;
   onCableDelete?: (cable: PatchCable) => void;
   onSelect?: (module: PatchModule | null) => void;
+  /** A module's body (not one of its controls) was right-clicked. */
+  onModuleMenu?: (module: PatchModule, event: MouseEvent) => void;
+  /** A module was removed; its cables have already gone through `onCableDelete`. */
+  onModuleDelete?: (module: PatchModule) => void;
+  /** A control was right-clicked. */
+  onParameterMenu?: (module: PatchModule, parameter: ParameterDef, event: MouseEvent) => void;
+  /** The badge to show on a control (e.g. which knob it is on), or null for none. */
+  badgeFor?: (module: PatchModule, parameter: ParameterDef) => string | null;
 }
 
 function el<K extends keyof SVGElementTagNameMap>(
@@ -96,11 +104,9 @@ interface Placed {
   group: SVGGElement;
   view: ModuleView;
   heightPx: number;
-  /** Laid-out position in canvas units, including the title strip. */
+  /** Laid-out position in canvas units. */
   pixelX: number;
   pixelY: number;
-  /** Set while dragging, to order the module against its new neighbours. */
-  dragY?: number;
 }
 
 /**
@@ -172,7 +178,7 @@ export class PatchView {
     const size = widget.size ?? 13;
     return {
       x: placed.pixelX + widget.x + size / 2,
-      y: placed.pixelY + MODULE_HEADER + widget.y + size / 2,
+      y: placed.pixelY + widget.y + size / 2,
     };
   }
 
@@ -289,108 +295,182 @@ export class PatchView {
   private renderModules(): void {
     this.moduleLayer.replaceChildren();
     this.placed.clear();
-
     for (const module of this.options.patch.modules) {
-      if (module.area !== this.options.area) continue;
-
-      const def = this.options.catalogue.modules.get(module.type);
-      const layout = def && this.options.theme.modules.get(def.componentId);
-      if (!def || !layout) continue;
-
-      const group = el('g', { class: 'patch-module', 'data-module-index': String(module.index) });
-      const view = new ModuleView({
-        def,
-        theme: layout,
-        imageBase: '/data/theme-images',
-        format: this.options.format,
-        onParameterChange: (parameter, value) =>
-          this.options.onParameterChange?.(module, parameter, value),
-      });
-
-      // The name goes in a strip above the panel. Drawn on the panel it landed
-      // on the artwork's own legends — "FilterE" over "Freq", and so on.
-      const strip = el('rect', {
-        x: 0, y: 0, width: layout.width, height: MODULE_HEADER,
-        rx: 3, fill: 'rgba(0,0,0,.45)', class: 'module-strip',
-      });
-      const title = el('text', { x: 6, y: 11, class: 'module-name' });
-      title.textContent = module.name || def.name;
-      const badge = el('text', {
-        x: layout.width - 6, y: 11, class: 'module-badge', 'text-anchor': 'end',
-      });
-      badge.textContent = `#${module.index}`;
-      group.append(strip, title, badge);
-
-      const nested = view.element;
-      nested.setAttribute('x', '0');
-      nested.setAttribute('y', String(MODULE_HEADER));
-      group.appendChild(nested);
-      group.style.cursor = 'move';
-
-      const placed: Placed = {
-        module, def, group, view, heightPx: layout.height, pixelX: 0, pixelY: 0,
-      };
-      this.placed.set(module.index, placed);
-      this.moduleLayer.appendChild(group);
-
-      // Apply the patch's stored values, positionally per modules.xml order.
-      const dump = this.options.patch.parameters.find((p) => p.area === this.options.area);
-      const stored = dump?.byModule.get(module.index) ?? [];
-      controlParameters(def).forEach((parameter, i) => {
-        if (i < stored.length) view.setValue(parameter.componentId, stored[i]);
-      });
+      if (module.area === this.options.area) this.placeModule(module);
     }
+    this.refreshBadges();
+  }
+
+  /** Draws one module and registers it; null if it has no themed panel. */
+  private placeModule(module: PatchModule): Placed | null {
+    const def = this.options.catalogue.modules.get(module.type);
+    const layout = def && this.options.theme.modules.get(def.componentId);
+    if (!def || !layout) return null;
+
+    const group = el('g', { class: 'patch-module', 'data-module-index': String(module.index) });
+    const view = new ModuleView({
+      def,
+      theme: layout,
+      imageBase: '/data/theme-images',
+      title: module.name || def.name,
+      format: this.options.format,
+      onParameterChange: (parameter, value) =>
+        this.options.onParameterChange?.(module, parameter, value),
+      onParameterMenu: this.options.onParameterMenu
+        && ((parameter, event) => this.options.onParameterMenu!(module, parameter, event)),
+    });
+
+    // The name is drawn on the panel itself, as in the original editors; a
+    // strip above it would make every module taller than its grid cells.
+    const nested = view.element;
+    nested.setAttribute('x', '0');
+    nested.setAttribute('y', '0');
+    group.appendChild(nested);
+    const tip = el('title');
+    tip.textContent = `${module.name || def.name} (${def.name} #${module.index})`;
+    group.appendChild(tip);
+    // Selection and drag feedback, drawn over the panel without taking clicks.
+    group.appendChild(el('rect', {
+      x: 0.5, y: 0.5, width: layout.width - 1, height: layout.height - 1, rx: 3,
+      class: 'module-outline', fill: 'none', 'pointer-events': 'none',
+    }));
+    group.style.cursor = 'move';
+    // Controls take their own right-click (the knob menu) and stop it there,
+    // so whatever reaches the group was on the panel itself.
+    group.addEventListener('contextmenu', (event: MouseEvent) => {
+      if (!this.options.onModuleMenu) return;
+      event.preventDefault();
+      this.select(module);
+      this.options.onModuleMenu(module, event);
+    });
+
+    const placed: Placed = {
+      module, def, group, view, heightPx: layout.height, pixelX: 0, pixelY: 0,
+    };
+    this.placed.set(module.index, placed);
+    this.moduleLayer.appendChild(group);
+
+    // Apply the patch's stored values, positionally per modules.xml order.
+    const dump = this.options.patch.parameters.find((p) => p.area === this.options.area);
+    const stored = dump?.byModule.get(module.index) ?? [];
+    controlParameters(def).forEach((parameter, i) => {
+      if (i < stored.length) view.setValue(parameter.componentId, stored[i]);
+    });
+    return placed;
   }
 
   /**
-   * Packs each column top to bottom in `ypos` order.
-   *
-   * Nothing can overlap because every module's position is the running total of
-   * the heights above it, rather than a coordinate that might collide.
+   * Shows a module just added to the patch model, at its cell, and pushes
+   * down whatever it lands on — the same rule as a drop from a drag, so each
+   * pushed module is reported through `onModuleMove`.
    */
-  private layout(): void {
-    const columns = new Map<number, Placed[]>();
-    for (const placed of this.placed.values()) {
-      const column = columns.get(placed.module.x) ?? [];
-      column.push(placed);
-      columns.set(placed.module.x, column);
-    }
+  addModule(module: PatchModule): void {
+    const placed = this.placeModule(module);
+    if (!placed) return;
+    this.refreshBadges();
+    const pushes = resolveMove(this.layoutItems(), module.index, module.x, module.y);
+    pushes.delete(module.index);
+    this.applyPlacement(pushes);
+  }
 
-    for (const [column, members] of columns) {
-      members.sort((a, b) => (a.dragY ?? a.module.y) - (b.dragY ?? b.module.y));
-      let y = 0;
-      for (const placed of members) {
-        placed.pixelX = column * (COLUMN_WIDTH + COLUMN_GAP);
-        placed.pixelY = y;
-        y += MODULE_HEADER + placed.heightPx + MODULE_GAP;
-        this.positionModule(placed);
+  /**
+   * Removes a module, as Nomad does: its cables first, each reported through
+   * `onCableDelete`, then the module itself through `onModuleDelete`.
+   */
+  removeModule(index: number): boolean {
+    const placed = this.placed.get(index);
+    if (!placed) return false;
+    for (const cable of this.cables.filter((c) => c.sourceModule === index || c.destModule === index)) {
+      this.removeCable(cable);
+    }
+    placed.group.remove();
+    this.placed.delete(index);
+    if (this.selected === placed.module) this.select(null);
+    this.options.onModuleDelete?.(placed.module);
+    return true;
+  }
+
+  /** The grid cell whose top-left corner is nearest a point on screen. */
+  cellAt(clientX: number, clientY: number): { x: number; y: number } {
+    const rect = this.element.getBoundingClientRect();
+    const x = (clientX - rect.left - this.view.x) / this.view.scale;
+    const y = (clientY - rect.top - this.view.y) / this.view.scale;
+    return {
+      x: Math.max(0, Math.min(MAX_GRID, Math.round(x / COLUMN_WIDTH))),
+      y: Math.max(0, Math.min(MAX_GRID, Math.round(y / ROW_HEIGHT))),
+    };
+  }
+
+  /** Outlines where a dragged-in module would land, or clears it with null. */
+  showDropTarget(cell: { x: number; y: number } | null, rows = 0): void {
+    this.overlay.querySelector('.drop-target')?.remove();
+    if (!cell) return;
+    this.overlay.appendChild(el('rect', {
+      x: cell.x * COLUMN_WIDTH, y: cell.y * ROW_HEIGHT,
+      width: COLUMN_WIDTH, height: rows * ROW_HEIGHT, rx: 3,
+      class: 'drop-target', 'pointer-events': 'none',
+    }));
+  }
+
+  /** Redraws every control's badge from `badgeFor`, after assignments change. */
+  refreshBadges(): void {
+    const badgeFor = this.options.badgeFor;
+    if (!badgeFor) return;
+    for (const placed of this.placed.values()) {
+      for (const parameter of controlParameters(placed.def)) {
+        placed.view.setBadge(parameter.componentId, badgeFor(placed.module, parameter));
       }
     }
   }
 
-  /** Writes `ypos` back as the module's rank in its column. */
-  private renumberColumns(): PatchModule[] {
-    const changed: PatchModule[] = [];
-    const columns = new Map<number, Placed[]>();
-
+  /** Places every module at its grid cell, or at `override` where given. */
+  private layout(override?: Placement): void {
     for (const placed of this.placed.values()) {
-      const column = columns.get(placed.module.x) ?? [];
-      column.push(placed);
-      columns.set(placed.module.x, column);
+      const cell = override?.get(placed.module.index) ?? placed.module;
+      placed.pixelX = cell.x * COLUMN_WIDTH;
+      placed.pixelY = cell.y * ROW_HEIGHT;
+      this.positionModule(placed);
     }
+  }
 
-    for (const members of columns.values()) {
-      members.sort((a, b) => (a.dragY ?? a.module.y) - (b.dragY ?? b.module.y));
-      members.forEach((placed, rank) => {
-        if (placed.module.y !== rank) {
-          placed.module.y = rank;
-          changed.push(placed.module);
-        }
-        placed.dragY = undefined;
-      });
+  /** The modules as the layout rules see them: column, row, height in rows. */
+  private layoutItems(): LayoutItem[] {
+    return Array.from(this.placed.values(), (placed) => ({
+      key: placed.module.index,
+      x: placed.module.x,
+      y: placed.module.y,
+      height: Math.round(placed.heightPx / ROW_HEIGHT),
+    }));
+  }
+
+  /** Pairs of modules sharing grid cells — which the original editors would show overlapping. */
+  get overlapCount(): number {
+    return countOverlaps(this.layoutItems());
+  }
+
+  /**
+   * Pushes overlapping modules apart, keeping their order, and reports each
+   * one that moved so the device follows.
+   */
+  fixOverlaps(): number {
+    return this.applyPlacement(resolveOverlaps(this.layoutItems()));
+  }
+
+  /** Commits new cells to the model, redraws, and reports each move. */
+  private applyPlacement(changes: Placement, first?: PatchModule): number {
+    const changed: PatchModule[] = [];
+    for (const placed of this.placed.values()) {
+      const cell = changes.get(placed.module.index);
+      if (!cell) continue;
+      placed.module.x = cell.x;
+      placed.module.y = cell.y;
+      if (placed.module === first) changed.unshift(placed.module);
+      else changed.push(placed.module);
     }
-
-    return changed;
+    this.layout();
+    this.renderCables();
+    for (const module of changed) this.options.onModuleMove?.(module, module.x, module.y);
+    return changed.length;
   }
 
   private positionModule(placed: Placed): void {
@@ -404,8 +484,7 @@ export class PatchView {
     for (const placed of all) {
       const left = placed.pixelX;
       const top = placed.pixelY;
-      const height = MODULE_HEADER + placed.heightPx;
-      if (x >= left && x <= left + COLUMN_WIDTH && y >= top && y <= top + height) {
+      if (x >= left && x <= left + COLUMN_WIDTH && y >= top && y <= top + placed.heightPx) {
         return placed;
       }
     }
@@ -413,10 +492,11 @@ export class PatchView {
   }
 
   /**
-   * Drags a module into another column or another place in its own.
+   * Drags a module to another grid cell.
    *
-   * The module reflows with its neighbours as it moves, so what you see during
-   * the drag is what the layout will settle to.
+   * It snaps to the nearest cell as it moves, and neighbours it would land on
+   * are pushed down live, so what you see during the drag is exactly what is
+   * sent on release.
    */
   private beginModuleDrag(event: PointerEvent, placed: Placed): void {
     event.preventDefault();
@@ -424,22 +504,19 @@ export class PatchView {
 
     this.select(placed.module);
     const start = this.toCanvas(event);
-    const originX = placed.module.x;
-    const originY = placed.module.y;
-    const originPixelY = placed.pixelY;
+    const items = this.layoutItems();
+    let preview: Placement = new Map();
     placed.group.classList.add('patch-module--dragging');
+    // Drawn above its neighbours while it moves.
+    this.moduleLayer.appendChild(placed.group);
 
     const move = (moveEvent: PointerEvent) => {
       const now = this.toCanvas(moveEvent);
-      placed.module.x = Math.max(
-        0,
-        originX + Math.round((now.x - start.x) / (COLUMN_WIDTH + COLUMN_GAP)),
-      );
-      // A continuous position decides the rank; the layout turns it back into
-      // a discrete slot. Half a module's height of lead makes the swap land
-      // where the pointer is rather than lagging behind it.
-      placed.dragY = originPixelY + (now.y - start.y) + placed.heightPx / 2;
-      this.layout();
+      // Nomad's screenToInternal rounds to the nearest cell.
+      const x = placed.module.x + Math.round((now.x - start.x) / COLUMN_WIDTH);
+      const y = placed.module.y + Math.round((now.y - start.y) / ROW_HEIGHT);
+      preview = resolveMove(items, placed.module.index, x, y);
+      this.layout(preview);
       this.renderCables();
     };
 
@@ -448,19 +525,8 @@ export class PatchView {
       this.element.removeEventListener('pointermove', move);
       this.element.removeEventListener('pointerup', up);
       placed.group.classList.remove('patch-module--dragging');
-
-      const moved = this.renumberColumns();
-      this.layout();
-      this.renderCables();
-
-      // Reordering a column shifts its other modules too, so every changed
-      // position is reported, not just the one that was dragged.
-      const changed = placed.module.x !== originX || placed.module.y !== originY
-        ? [placed.module, ...moved.filter((m) => m !== placed.module)]
-        : moved;
-      for (const module of changed) {
-        this.options.onModuleMove?.(module, module.x, module.y);
-      }
+      // The dragged module first, then whatever it pushed.
+      this.applyPlacement(preview, placed.module);
     };
 
     this.element.addEventListener('pointermove', move);
@@ -741,41 +807,52 @@ export class PatchView {
     let height = 1;
     for (const placed of this.placed.values()) {
       width = Math.max(width, placed.pixelX + COLUMN_WIDTH);
-      height = Math.max(height, placed.pixelY + MODULE_HEADER + placed.heightPx);
+      height = Math.max(height, placed.pixelY + placed.heightPx);
     }
     return { width, height };
   }
 
-  /**
-   * Fits the patch to the viewport and centres it.
-   *
-   * Scaling up is allowed: a small patch left at 100% wastes most of a large
-   * canvas. The ceiling keeps panels from becoming comically large.
-   */
-  fit(width: number, height: number, padding = 20): void {
-    if (width <= 0 || height <= 0) return;
-    const content = this.contentSize();
+  /** Whether this area has any modules drawn. */
+  get isEmpty(): boolean {
+    return this.placed.size === 0;
+  }
 
+  /**
+   * The scale at which the whole patch, from the grid origin, fits a viewport.
+   *
+   * Measured from (0, 0) rather than from the first module, so empty columns
+   * and rows at the top-left stay visible, as they are in the original.
+   * Scaling up is allowed — a small patch at 100% wastes most of a large
+   * canvas — but only modestly, so a three-module patch still reads as the
+   * same patch it is in the original rather than filling the screen.
+   */
+  fitScale(width: number, height: number, padding = FIT_PADDING): number {
+    if (width <= 0 || height <= 0) return this.view.scale;
+    const content = this.contentSize();
     const scale = Math.min(
       (width - padding * 2) / content.width,
       (height - padding * 2) / content.height,
-      2.5,
+      1.5,
     );
-    this.view.scale = Math.max(0.15, scale);
+    return Math.max(0.15, scale);
+  }
 
-    // Centre whatever space is left over.
-    this.view.x = (width - content.width * this.view.scale) / 2;
-    this.view.y = (height - content.height * this.view.scale) / 2;
+  /** Shows the grid origin at the top-left corner, at the given scale. */
+  showOrigin(scale: number, padding = FIT_PADDING): void {
+    this.view.scale = scale;
+    this.view.x = padding;
+    this.view.y = padding;
     this.applyTransform();
   }
 
-  /** Resets to 100% with the patch centred, for the "actual size" case. */
-  resetZoom(width: number, height: number): void {
-    const content = this.contentSize();
-    this.view.scale = 1;
-    this.view.x = Math.max(20, (width - content.width) / 2);
-    this.view.y = Math.max(20, (height - content.height) / 2);
-    this.applyTransform();
+  fit(width: number, height: number): void {
+    if (width <= 0 || height <= 0) return;
+    this.showOrigin(this.fitScale(width, height));
+  }
+
+  /** Back to 100%, origin at the top-left, for the "actual size" case. */
+  resetZoom(): void {
+    this.showOrigin(1);
   }
 
   get zoom(): number {

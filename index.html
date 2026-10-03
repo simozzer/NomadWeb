@@ -59,21 +59,6 @@
           <p class="hint" id="patch-hint">Connect the device first.</p>
           <div id="patch-list" class="patch-list"></div>
         </section>
-
-        <section class="panel" id="browser">
-          <h2>Modules <span class="count" id="module-count"></span></h2>
-          <div class="row">
-            <label>Category
-              <select id="category"></select>
-            </label>
-          </div>
-          <div class="row">
-            <label class="grow">Search
-              <input id="search" type="search" placeholder="name, e.g. ADSR" />
-            </label>
-          </div>
-          <div id="module-grid" class="module-grid"></div>
-        </section>
       </aside>
 
       <div
@@ -87,16 +72,19 @@
       ></div>
 
       <main class="workspace">
+        <div id="module-toolbar-host"></div>
         <section class="editor" id="current-patch" hidden>
           <header class="editor-bar">
-            <div class="tabs" id="area-tabs">
-              <button type="button" data-area="voice" class="tab tab--active">Voice</button>
-              <button type="button" data-area="common" class="tab">Common / FX</button>
-            </div>
             <span class="count" id="loaded-summary"></span>
+            <div class="dsp-load" id="dsp-load" title="DSP load: the voice area, and both areas together">
+              <span class="dsp-label">Load</span>
+              <span class="dsp-meter" id="dsp-voice"><span class="dsp-fill"></span><span class="dsp-text"></span></span>
+              <span class="dsp-label">&Sigma;</span>
+              <span class="dsp-meter" id="dsp-total"><span class="dsp-fill"></span><span class="dsp-text"></span></span>
+            </div>
             <div class="spacer"></div>
             <span class="hint hint--inline">
-              Drag a module by its body · connector to connector to patch · click a cable to disconnect
+              Drag a module by its body · connector to connector to patch · click a cable to disconnect · right-click a control to put it on a knob, or a module to delete it
             </span>
             <div class="zoom-controls">
               <button id="zoom-out" type="button" title="Zoom out">&minus;</button>
@@ -106,8 +94,31 @@
               <button id="zoom-reset" type="button" title="Actual size">1:1</button>
             </div>
           </header>
+          <div class="knob-strip" id="knob-strip"></div>
           <p class="hint" id="loaded-hint"></p>
-          <div id="patch-canvas-host" class="canvas-host"></div>
+          <div class="layout-warning" id="layout-warning" hidden>
+            <span id="layout-warning-text"></span>
+            <button id="fix-overlaps" type="button">Spread them out</button>
+          </div>
+          <!-- The two patch areas, as the original editor shows them: the voice
+               area above, the common/FX area below a divider that can be
+               dragged, and is closed when that area is empty. -->
+          <div class="patch-panes" id="patch-panes">
+            <div id="patch-canvas-host" class="canvas-host" aria-label="Voice area"></div>
+            <div
+              class="pane-splitter"
+              id="pane-splitter"
+              role="separator"
+              aria-orientation="horizontal"
+              aria-label="Resize the Common / FX area"
+              tabindex="0"
+              title="Drag to resize · double-click to open or close"
+            >
+              <span class="pane-splitter-label">Common / FX</span>
+              <span class="count" id="common-count"></span>
+            </div>
+            <div id="common-canvas-host" class="canvas-host" aria-label="Common / FX area"></div>
+          </div>
         </section>
 
         <section class="editor-placeholder" id="editor-placeholder">

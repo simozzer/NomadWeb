@@ -178,11 +178,12 @@ process.stdout.write('\nParts parsed separately (not concatenated)\n');
   const namePart = patchEncoder.encode({
     section: { type: SECTION.PatchName, data: { name: chars('Split Patch') } },
   });
+  // Section 1 is the poly voice area, 0 the common area (PatchBuilder.getVoiceArea).
   const modulePart = patchEncoder.encode({
     section: {
       type: SECTION.ModuleDump,
       data: {
-        section: 0, nmodules: 2,
+        section: 1, nmodules: 2,
         modules: [
           { type: 20, index: 1, xpos: 0, ypos: 0 },
           { type: 4, index: 2, xpos: 1, ypos: 3 },
@@ -194,7 +195,7 @@ process.stdout.write('\nParts parsed separately (not concatenated)\n');
     section: {
       type: SECTION.ModuleDump,
       data: {
-        section: 1, nmodules: 1,
+        section: 0, nmodules: 1,
         modules: [{ type: 7, index: 1, xpos: 0, ypos: 0 }],
       },
     },
@@ -203,7 +204,7 @@ process.stdout.write('\nParts parsed separately (not concatenated)\n');
     section: {
       type: SECTION.CableDump,
       data: {
-        section: 0, ncables: 1,
+        section: 1, ncables: 1,
         cables: [{ color: 1, source: 1, inputOutput: 5, type: 1, destination: 2, input: 0 }],
       },
     },
@@ -235,7 +236,7 @@ process.stdout.write('\nParts parsed separately (not concatenated)\n');
 process.stdout.write('\nLayout scheme detection\n');
 {
   const { describeLayoutScheme } = await import('../src/model/patch.ts');
-  const base = { name: '', cables: [], parameters: [], sections: new Map() };
+  const base = { name: '', cables: [], parameters: [], knobs: new Map(), sections: new Map() };
 
   // Ranks within a column: consecutive integers.
   const ordinal = describeLayoutScheme({

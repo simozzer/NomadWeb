@@ -155,6 +155,47 @@ process.stdout.write('\nPatch grid geometry\n');
     `${total} connectors, ${unplaceable} unplaceable`);
 }
 
+process.stdout.write('\nModule toolbar (module-toolbar.json)\n');
+{
+  const { existsSync } = await import('node:fs');
+  const toolbar = JSON.parse(read('module-toolbar.json')) as { tabs: { name: string; groups: number[][] }[] };
+  const placeable = Array.from(catalogue.modules.values()).filter((def) => def.category !== 'Morph');
+  const placed = toolbar.tabs.flatMap((tab) => tab.groups.flat().map((index) => ({ tab: tab.name, index })));
+
+  check('one tab per category, in the original order',
+    toolbar.tabs.map((t) => t.name).join() === 'In/Out,Osc,LFO,Env,Filter,Mixer,Audio,Ctrl,Logic,Seq' &&
+      toolbar.tabs.every((t) => catalogue.categories.includes(t.name)), toolbar.tabs.map((t) => t.name).join(' '));
+  const missing = placeable.filter((def) => !placed.some((p) => p.index === def.index));
+  check('every module has a button', missing.length === 0,
+    `${placed.length} buttons for ${placeable.length} modules` + (missing.length ? ` · missing ${missing.map((d) => d.name).join(', ')}` : ''));
+  const seen = new Set<number>();
+  const duplicates = placed.filter((p) => seen.has(p.index) || !seen.add(p.index));
+  check('and only one', duplicates.length === 0, duplicates.map((d) => d.index).join(', '));
+  const misfiled = placed.filter((p) => catalogue.modules.get(p.index)?.category !== p.tab);
+  check('each sits in its own category\'s tab', misfiled.length === 0,
+    misfiled.map((p) => `${p.index} in ${p.tab}`).join(', '));
+  const noIcon = placeable.filter((def) =>
+    !def.icon || !existsSync(new URL(`../public/data/${def.icon}`, import.meta.url)));
+  check('every module\'s 16x16 icon is on disk', noIcon.length === 0, noIcon.map((d) => d.name).join(', '));
+}
+
+process.stdout.write('\nDSP load\n');
+{
+  const { patchLoad, formatLoad } = await import('../src/model/load.ts');
+  const byName = (name: string) => [...catalogue.modules.values()].find((d) => d.name === name)!.index;
+  // The House Bass patch, which the Clavia editor shows as "PVA 41.4%  Σ 41.4%".
+  const houseBass = ['OscA', 'OscA', 'OscSlvA', 'Mixer (3)', 'FilterE', 'ADSR', 'ADSR', 'Keyboard', '2Output']
+    .map((name, i) => ({ area: 'voice' as const, type: byName(name), index: i + 1, x: 0, y: i * 6 }));
+  const base = { name: '', cables: [], parameters: [], knobs: new Map(), sections: new Map() };
+  const load = patchLoad({ ...base, modules: houseBass }, catalogue);
+  check('matches the Clavia editor on a real patch', formatLoad(load.voice) === '41.4%' && formatLoad(load.total) === '41.4%',
+    `voice ${load.voice}, total ${load.total}`);
+  const withFx = patchLoad({ ...base, modules: [...houseBass,
+    { area: 'common' as const, type: byName('Mixer (3)'), index: 1, x: 0, y: 0 }] }, catalogue);
+  check('the common area counts toward the total, not the voice figure',
+    withFx.voice === load.voice && withFx.total > load.total, `+${(withFx.total - load.total).toFixed(3)}`);
+}
+
 process.stdout.write('\nFormatters (nmformat.js)\n');
 const formatters = new FormatterTable(read('nmformat.js'));
 const referenced = new Set<string>();

@@ -33,6 +33,7 @@ MIDI more recently and are less battle-tested for SysEx-heavy use.
 | `public/data/classic-theme.xml` | Pixel layout of every module panel |
 | `public/data/nmformat.js` | Value formatters — original ES3, runs as-is |
 | `public/data/theme-images/` | Button face graphics |
+| `public/data/img/icons/16x16/` | Module toolbar icons |
 
 Nothing about any individual module is hardcoded in the TypeScript. Adding a module means
 editing the XML, exactly as it did upstream.
@@ -58,19 +59,47 @@ truth — including the checksum rule, which the grammar expresses declaratively
 - Backtracking decoder (continuation-passing), needed for the recursive
   optional chains in the patch list and patch dumps
 - Device handshake, patch list, patch load and patch dump over Web MIDI
-- Patch canvas: modules on the 255x15 grid, cables, drag, patch and cut
+- Patch canvas laid out as the original editor shows it: the voice area above, the
+  common/FX area below a draggable divider (closed when empty). Modules sit at
+  their absolute grid cells — `xpos * 255`, `ypos * 15` (Nomad's
+  `PBasicModuleMetrics`) — with the name on the panel, so a patch arranged here
+  opens the same way in the original. A drop snaps to the grid and pushes
+  overlapped neighbours down, as Nomad's `LayoutTool` does
+- Patches whose positions an earlier version of this editor wrote as ranks
+  (0, 1, 2…) are flagged as overlapping, with one click to spread them out
+- Cables: drag, patch and cut
 - Live edits sent as real messages: parameter, module move, cable add/delete
 - Module catalogue and panel layouts: 1066 bindings, 382 connectors, none dangling
+- Module toolbar as the Clavia editor has it: one tab per category, with the
+  icons in that editor's order and groups (`public/data/module-toolbar.json`,
+  read off its toolbar) and Nomad's own 16x16 icons. Click a button to preview
+  its module's panel; drag it onto either area to add it
+- Adding modules: the fragment `NewModuleMessage.newModule` builds (module,
+  empty cables, default parameter and custom values, name), sent as one patch
+  packet (cc 0x1f) quoting the slot's patch id. The drop snaps to the grid and
+  pushes down what it lands on; the one-per-patch limit is enforced
+- Deleting modules: right-click a module, or select it and press Delete. As in
+  Nomad, its cables are cut first (one `DeleteCable` each), then `ModuleDeletion`
+  (sc 0x32); its knob assignments are dropped
+- DSP load meter, as the original's "Load: PVA … Σ …": each module's `cycles`
+  in modules.xml is a percentage, summed per area (Nomad's
+  `JTPatchSettingsBar.updateCyclesInfo`) — 41.44% for a patch the Clavia editor
+  shows at 41.4%. A module that would take the total past 100% is refused
+- Knobs follow the hardware: a knob turned on the device (`KnobChange`, or a
+  `ParameterChange`) turns the matching control on screen
 - All 45 value formatters compile and evaluate
+- Hardware knob assignments: read from the patch's knob map, shown as a strip
+  above the canvas and a badge on each assigned control; right-click a control
+  to put it on a knob, move it, or remove it (`KnobAssignmentMessage`, sc 0x25/0x26).
+  On a Micro Modular only its three knobs are offered
 
-124 checks pass (`npm test`).
+218 checks pass (`npm test`).
 
 **Not yet done**
 
-- Adding modules to a patch (`NewModuleMessage` goes via a patch packet, cc 0x1f)
 - Storing a patch back to a bank, and .pch file import/export
 - Undo
-- Morph assignments, knob and MIDI-controller mappings
+- Morph assignments and MIDI-controller mappings
 - Custom panel graphics — LFO shapes, envelope curves — drawn as placeholders
 - Meters and LEDs are decoded but not shown on the panels
 
@@ -79,7 +108,8 @@ the patch list, loading a patch into a slot, and the full patch read-back — wh
 displays correctly on the canvas.
 
 Not yet confirmed on hardware: the canvas edit messages (module move, cable add and
-delete, parameter change). They are verified against their bit layouts in tests, and
+delete, parameter change, knob assignment, adding and deleting modules, knob follow). Nor is it confirmed that the Micro
+Modular's three knobs are knob ids 0-2 (knobs 1-3). They are verified against their bit layouts in tests, and
 they are modification-family commands, so try them on a patch you can afford to lose.
 
 ## Licence

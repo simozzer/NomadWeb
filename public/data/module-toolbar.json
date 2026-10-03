@@ -1,0 +1,15 @@
+{
+  "_source": "Tab order and grouping of the Clavia Nord Modular Editor's module toolbar, read off its own toolbar. Each tab is a category in modules.xml; each group is a run of buttons between separators, given as module type indexes.",
+  "tabs": [
+    { "name": "In/Out", "groups": [[1, 63, 65], [2, 127], [5, 4, 3], [67, 100]] },
+    { "name": "Osc",    "groups": [[97, 7, 8, 9, 107, 96], [14, 10, 11, 12, 13, 106, 85], [31], [95, 58]] },
+    { "name": "LFO",    "groups": [[24, 25, 26], [80, 27, 28, 29, 30], [68], [33, 34, 110, 35, 99]] },
+    { "name": "Env",    "groups": [[20, 84, 23, 46, 52], [71]] },
+    { "name": "Filter", "groups": [[86, 87, 50], [49, 51, 92], [45, 108, 32], [103, 104]] },
+    { "name": "Mixer",  "groups": [[19, 40], [44], [18, 47], [113, 114], [111, 112], [76], [79, 88], [81]] },
+    { "name": "Audio",  "groups": [[61, 62, 74], [54, 53, 57, 82, 94, 102], [78], [83], [21, 105, 117, 118]] },
+    { "name": "Ctrl",   "groups": [[43], [39, 48, 16], [72, 75, 98, 22], [66, 115]] },
+    { "name": "Logic",  "groups": [[36, 64, 38, 37], [70], [73], [59, 89], [69, 77]] },
+    { "name": "Seq",    "groups": [[17], [91], [15, 90]] }
+  ]
+}

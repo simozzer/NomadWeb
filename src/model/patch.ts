@@ -1,5 +1,6 @@
 import { parsePdl2 } from '../pdl2/parser.ts';
-import { Pdl2Decoder, type Decoded } from '../pdl2/interpreter.ts';
+import { Pdl2Decoder, Pdl2Encoder, type Decoded, type MessageInit } from '../pdl2/interpreter.ts';
+import type { Grammar } from '../pdl2/ast.ts';
 
 /**
  * Reads a Nord Modular patch from the bitstream described by `patch.pdl2`.
@@ -30,6 +31,7 @@ export const SECTION = {
 /**
  * The Nord Modular has two patch areas. The 1-bit `section` field in each dump
  * selects between them: the polyphonic voice area and the common/FX area.
+ * See `areaOf` for which bit is which.
  */
 export type PatchArea = 'voice' | 'common';
 
@@ -61,11 +63,22 @@ export interface PatchParameters {
   byModule: Map<number, number[]>;
 }
 
+/** A parameter a hardware knob controls. */
+export interface KnobTarget {
+  area: PatchArea;
+  /** Module instance index within the area. */
+  module: number;
+  /** Parameter index, as `ParameterChange` addresses it. */
+  parameter: number;
+}
+
 export interface Patch {
   name: string;
   modules: PatchModule[];
   cables: PatchCable[];
   parameters: PatchParameters[];
+  /** Knob id (see `KNOB_NAMES`) -> what it controls. Unassigned knobs are absent. */
+  knobs: Map<number, KnobTarget>;
   /** Every section as decoded, keyed by type code, for anything not modelled. */
   sections: Map<number, Decoded[]>;
 }
@@ -143,7 +156,100 @@ function textOf(node: Decoded | undefined): string {
     .trim();
 }
 
-const areaOf = (value: number | undefined): PatchArea => (value === 1 ? 'common' : 'voice');
+/**
+ * The `section` bit: 1 is the poly voice area, 0 the common area.
+ *
+ * From `PatchBuilder.getVoiceArea`, whose `lookupswitch` sends 1 to
+ * `getPolyVoiceArea` and 0 to `getCommonVoiceArea` — and `GetPatchMessage`
+ * requests POLY_MODULE with payload 1. This used to be the other way round,
+ * which every edit faithfully echoed back, so the device was always addressed
+ * correctly; only the area labels were swapped.
+ */
+export const areaOf = (value: number | undefined): PatchArea => (value === 1 ? 'voice' : 'common');
+export const areaBit = (area: PatchArea): 0 | 1 => (area === 'voice' ? 1 : 0);
+
+export interface NewModule {
+  type: number;
+  area: PatchArea;
+  index: number;
+  x: number;
+  y: number;
+  name: string;
+  /** Values of the module's `parameter`-class parameters, in modules.xml order. */
+  parameters: number[];
+  /** Values of its `custom`-class parameters, in modules.xml order. */
+  customs: number[];
+}
+
+/**
+ * Writes patch bitstreams, for the one case the device takes a patch fragment
+ * instead of a message: adding a module.
+ */
+export class PatchWriter {
+  private readonly grammar: Grammar;
+  private readonly encoder: Pdl2Encoder;
+
+  constructor(patchGrammarSource: string) {
+    this.grammar = parsePdl2(patchGrammarSource);
+    this.encoder = new Pdl2Encoder(this.grammar);
+  }
+
+  /**
+   * The fragment `NewModuleMessage.newModule` builds: the module itself
+   * (`SingleModule`), an empty cable list, its parameter values, its custom
+   * values and its name — five sections, in that order, for its own area.
+   */
+  newModule(module: NewModule): { bytes: Uint8Array; bitLength: number } {
+    const section = areaBit(module.area);
+    const name = { chars: Array.from(module.name.slice(0, 16), (c) => c.charCodeAt(0) & 0x7f) };
+
+    const fields = this.parameterFields(module.type);
+    if (fields.length !== module.parameters.length) {
+      throw new Error(
+        `module type ${module.type} stores ${fields.length} parameters, ` +
+          `but ${module.parameters.length} were given`,
+      );
+    }
+    const values: MessageInit = {};
+    fields.forEach((field, i) => { values[field] = module.parameters[i]; });
+
+    const sections: MessageInit[] = [
+      { type: SECTION.SingleModule, data: {
+        type: module.type, section, index: module.index, xpos: module.x, ypos: module.y, name,
+      } },
+      { type: SECTION.CableDump, data: { section, ncables: 0, cables: [] } },
+      { type: SECTION.ParameterDump, data: fields.length
+        ? { section, nmodules: 1, parameters: [{ index: module.index, type: module.type, parameters: values }] }
+        : { section, nmodules: 0, parameters: [] } },
+      { type: SECTION.CustomDump, data: module.customs.length
+        ? { section, nmodules: 1, customModules: [{
+            index: module.index, nparams: module.customs.length,
+            customValues: module.customs.map((value) => ({ value })),
+          }] }
+        : { section, nmodules: 0, customModules: [] } },
+      { type: SECTION.NameDump, data: {
+        section, nmodules: 1, moduleNames: [{ index: module.index, name }],
+      } },
+    ];
+
+    // Patch := Section$section ?Patch$next
+    let chain: MessageInit | undefined;
+    for (const sectionData of sections.reverse()) {
+      chain = chain ? { section: sectionData, next: chain } : { section: sectionData };
+    }
+    return this.encoder.encodeBits(chain!);
+  }
+
+  /**
+   * Field names of a module type's stored parameters, in stream order. Each
+   * type has its own `ParamN` rule; the order is the order modules.xml
+   * declares the parameters in, which is also how the reader maps them.
+   */
+  private parameterFields(type: number): string[] {
+    const rule = this.grammar.rules.get(`Param${type}`);
+    return (rule?.body ?? []).flatMap((item) => (item.kind === 'var' ? [item.name] : []));
+  }
+}
 
 export class PatchReader {
   private readonly decoder: Pdl2Decoder;
@@ -209,6 +315,7 @@ export class PatchReader {
       modules: this.readModules(sections),
       cables: this.readCables(sections),
       parameters: this.readParameters(sections),
+      knobs: this.readKnobs(sections),
       sections,
     };
 
@@ -287,6 +394,32 @@ export class PatchReader {
       dumps.push({ area: areaOf(dump?.values.get('section')), byModule });
     }
     return dumps;
+  }
+
+  /**
+   * `KnobMapDump` has a fixed entry per knob id, `knob0` to `knob22`, each
+   * with an `assigned` flag and, when set, the parameter it drives. Its
+   * `section` is two bits wide; only the two patch areas are modelled.
+   */
+  private readKnobs(sections: Map<number, Decoded[]>): Map<number, KnobTarget> {
+    const knobs = new Map<number, KnobTarget>();
+    for (const section of sections.get(SECTION.KnobMapDump) ?? []) {
+      const dump = one(section, 'data');
+      for (let knob = 0; knob <= 22; knob++) {
+        const entry = one(dump, `knob${knob}`);
+        // `assigned*KnobAssignment` is a counted repeat, so it decodes as a list.
+        const [assignment] = many(entry, 'assignment');
+        if (!assignment) continue;
+        const area = assignment.values.get('section');
+        if (area !== 0 && area !== 1) continue;
+        knobs.set(knob, {
+          area: areaOf(area),
+          module: assignment.values.get('module') ?? -1,
+          parameter: assignment.values.get('parameter') ?? -1,
+        });
+      }
+    }
+    return knobs;
   }
 
   /** `NameDump` carries the user-assigned label for each module, if any. */

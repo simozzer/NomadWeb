@@ -26,6 +26,30 @@ export const DEVICE_NAMES: Record<number, string> = {
   0x02: 'Micro Modular',
 };
 
+/**
+ * Knob ids as the protocol numbers them, with `Knob.getDefaultName`'s names.
+ *
+ * `KnobSet` builds 0-17 as knobs 1-18, then 19, 20 and 22; 18 and 21 are
+ * never used.
+ */
+export const KNOB_NAMES: ReadonlyMap<number, string> = new Map([
+  ...Array.from({ length: 18 }, (_, i) => [i, `Knob ${i + 1}`] as [number, string]),
+  [19, 'Pedal'],
+  [20, 'After touch'],
+  [22, 'On/Off switch'],
+]);
+
+/**
+ * Knobs a model physically has.
+ *
+ * The Micro Modular's three front-panel knobs are taken to be knobs 1-3. That
+ * is not confirmed on hardware: Nomad itself makes no distinction between
+ * models here.
+ */
+export function knobsFor(deviceId: number | undefined): number[] {
+  return deviceId === 0x02 ? [0, 1, 2] : [...KNOB_NAMES.keys()];
+}
+
 export interface DeviceIdentity {
   deviceId: number;
   deviceName: string;
@@ -168,6 +192,42 @@ export function unpack7Bit(payload: Uint8Array): Uint8Array {
     }
   }
   return out;
+}
+
+/**
+ * The inverse of `unpack7Bit`, as `NewModuleMessage.newModule` does it: pad
+ * the bitstream with six zero bits, then take whole 7-bit groups, dropping
+ * any shorter remainder.
+ */
+export function pack7Bit(bitstream: Uint8Array, bitLength = bitstream.length * 8): number[] {
+  const total = bitLength + 6;
+  const bit = (p: number) => (p < bitLength ? (bitstream[p >> 3] >> (7 - (p & 7))) & 1 : 0);
+  const out: number[] = [];
+  for (let pos = 0; pos + 7 <= total; pos += 7) {
+    let value = 0;
+    for (let b = 0; b < 7; b++) value = (value << 1) | bit(pos + b);
+    out.push(value);
+  }
+  return out;
+}
+
+/**
+ * Frames a patch fragment as one patch packet, the way `NewModuleMessage`
+ * does: cc 0x1f (first and last of its run), then `0:1 command:1 pid:6` with
+ * command 0, the 7-bit payload, and the usual checksum.
+ */
+export function patchPacket(
+  slot: number,
+  pid: number,
+  fragment: { bytes: Uint8Array; bitLength: number },
+): Uint8Array {
+  const bytes = [
+    0xf0, 0x33, ((CC.PatchPacketBase | 0x03) << 2) | (slot & 0x03), 0x06,
+    pid & 0x3f,
+    ...pack7Bit(fragment.bytes, fragment.bitLength),
+  ];
+  bytes.push(bytes.reduce((sum, b) => sum + b, 0) % 128, 0xf7);
+  return Uint8Array.from(bytes);
 }
 
 export interface PatchDumpReport {
@@ -770,6 +830,18 @@ export class NordModular {
     });
   }
 
+  /**
+   * Adds a module: the fragment from `PatchWriter.newModule`, sent as one
+   * patch packet quoting the slot's patch id (NmUtils.createNewModuleMessage).
+   */
+  addModule(slot: number, fragment: { bytes: Uint8Array; bitLength: number }): Uint8Array {
+    if (slot < 0 || slot > 3) throw new RangeError(`invalid slot ${slot} (0-3)`);
+    const message = patchPacket(slot, this.getActivePid(slot), fragment);
+    this.transport.send(message);
+    this.record({ direction: 'out', at: Date.now(), hex: formatSysex(message) });
+    return message;
+  }
+
   /** Moves a module on the patch grid. `sc` 0x34, per MoveModuleMessage. */
   moveModule(slot: number, area: 0 | 1, moduleIndex: number, x: number, y: number): Uint8Array {
     return this.modifyPatch(slot, 0x34, {
@@ -818,6 +890,45 @@ export class NordModular {
   /** Removes a module from the patch. `sc` 0x32. */
   deleteModule(slot: number, area: 0 | 1, moduleIndex: number): Uint8Array {
     return this.modifyPatch(slot, 0x32, { section: area, module: moduleIndex });
+  }
+
+  /**
+   * Puts a parameter on a hardware knob, or takes one off.
+   *
+   * Mirrors `KnobAssignmentMessage.assign(slot, pid, prevKnob, knob, ...)`:
+   *
+   * - no previous knob: `sc` 0x25 with the new assignment;
+   * - a previous knob: `sc` 0x26 quoting it, followed by the new assignment as
+   *   a nested 0x25 packet — or by nothing, which clears that knob.
+   *
+   * `previousKnob` is the knob the *parameter* was on before, not whatever the
+   * target knob held. A parameter rides on at most one knob.
+   */
+  assignKnob(
+    slot: number,
+    previousKnob: number | null,
+    assignment: { knob: number; area: 0 | 1; module: number; parameter: number } | null,
+  ): Uint8Array {
+    if (previousKnob === null && !assignment) {
+      throw new Error('previous and new knob can not both be empty');
+    }
+    for (const knob of [previousKnob, assignment?.knob]) {
+      if (knob != null && (knob < 0 || knob > 22)) throw new RangeError(`invalid knob ${knob}`);
+    }
+
+    const fields = assignment && {
+      module: assignment.module,
+      parameter: assignment.parameter,
+      section: assignment.area,
+      knob: assignment.knob,
+    };
+
+    if (previousKnob === null) return this.modifyPatch(slot, 0x25, fields!);
+    // The nested packet wraps the assignment once more (`NewKnobAssignmentPacket
+    // := 0x25 KnobAssignment$data`), hence Java's extra `data:data:` prefix.
+    return this.modifyPatch(slot, 0x26, fields
+      ? { prevknob: previousKnob, data: { data: fields } }
+      : { prevknob: previousKnob });
   }
 
   /** Sets a single parameter value. `sc` 0x40 under the Parameter command. */

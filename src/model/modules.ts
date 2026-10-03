@@ -59,6 +59,8 @@ export interface ModuleDef {
   /** Height in the patch grid's row units. */
   height: number;
   background?: string;
+  /** The 16x16 toolbar icon, relative to the data folder. */
+  icon?: string;
   /** DSP cycles consumed, used for the patch resource meters. */
   cycles?: number;
   attributes: Map<string, string>;
@@ -157,6 +159,9 @@ export function parseModuleCatalogue(xml: string): ModuleCatalogue {
       lights,
       height: Number(attributes.get('height') ?? '2'),
       background: attributes.get('background'),
+      icon: Array.from(el.getElementsByTagName('image'))
+        .find((image) => attr(image, 'type') === 'icon16x16')
+        ?.getAttribute('src') ?? undefined,
       cycles: attributes.has('cycles') ? Number(attributes.get('cycles')) : undefined,
       attributes,
     };

@@ -429,10 +429,19 @@ export class Pdl2Encoder {
   }
 
   encode(data: MessageInit, options: EncodeOptions = {}): Uint8Array {
+    return this.encodeBits(data, options).bytes;
+  }
+
+  /**
+   * As `encode`, plus the exact length in bits. A bitstream that is re-cut
+   * into 7-bit groups (a patch packet) needs it: the zero padding that fills
+   * out the last byte is not part of the stream.
+   */
+  encodeBits(data: MessageInit, options: EncodeOptions = {}): { bytes: Uint8Array; bitLength: number } {
     const writer = new BitWriter();
     const rule = this.requireRule(this.grammar.start);
     this.encodeRule(rule, data, writer, new Scope(null), options);
-    return writer.toBytes();
+    return { bytes: writer.toBytes(), bitLength: writer.pos };
   }
 
   private requireRule(name: string): Rule {

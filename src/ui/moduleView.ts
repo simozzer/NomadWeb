@@ -27,10 +27,14 @@ export interface ModuleViewOptions {
   theme: ModuleTheme;
   /** Base URL for theme images (button faces). */
   imageBase: string;
+  /** Name drawn on the panel's top-left corner, as the original editors do. */
+  title?: string;
   /** Formats a parameter value for its text display. */
   format?: (parameter: ParameterDef, value: number) => string;
   /** Called as the user edits a control. */
   onParameterChange?: (parameter: ParameterDef, value: number) => void;
+  /** Called when a control is right-clicked; it takes over the context menu. */
+  onParameterMenu?: (parameter: ParameterDef, event: MouseEvent) => void;
 }
 
 function el<K extends keyof SVGElementTagNameMap>(
@@ -56,6 +60,9 @@ export class ModuleView {
   private readonly values = new Map<string, number>();
   /** Redraw callbacks keyed by parameter component-id. */
   private readonly painters = new Map<string, ((value: number) => void)[]>();
+  /** Top-right corner of each control, where its knob badge goes. */
+  private readonly badgeAnchors = new Map<string, { x: number; y: number }>();
+  private readonly badges = new Map<string, SVGGElement>();
 
   constructor(options: ModuleViewOptions) {
     this.options = options;
@@ -86,6 +93,13 @@ export class ModuleView {
       }),
     );
 
+    if (options.title) {
+      // Baseline 9 keeps it clear of labels the theme starts at y=11 (OscA's "Freq").
+      const title = el('text', { x: 3, y: 9, class: 'panel-title' });
+      title.textContent = options.title;
+      this.element.appendChild(title);
+    }
+
     for (const widget of theme.widgets) this.renderWidget(widget);
   }
 
@@ -97,6 +111,46 @@ export class ModuleView {
 
   getValue(parameterId: string): number {
     return this.values.get(parameterId) ?? 0;
+  }
+
+  /**
+   * Shows which hardware knob a control is on, or clears it with `null`.
+   *
+   * Drawn last so it sits above the panel, and ignores the pointer so it never
+   * gets in the way of turning the control underneath.
+   */
+  setBadge(parameterId: string, text: string | null): void {
+    this.badges.get(parameterId)?.remove();
+    this.badges.delete(parameterId);
+    const anchor = this.badgeAnchors.get(parameterId);
+    if (!text || !anchor) return;
+
+    const width = 6 + text.length * 5.5;
+    const x = Math.min(anchor.x - width / 2, this.options.theme.width - width);
+    const y = Math.max(anchor.y - 5, 0);
+    const badge = el('g', { class: 'knob-badge', 'pointer-events': 'none' });
+    badge.append(
+      el('rect', { x, y, width, height: 10, rx: 3 }),
+      el('text', { x: x + width / 2, y: y + 7.5, 'text-anchor': 'middle' }),
+    );
+    badge.lastElementChild!.textContent = text;
+    this.element.appendChild(badge);
+    this.badges.set(parameterId, badge);
+  }
+
+  /** Records where a control's badge goes and routes its right-click. */
+  private attachMenu(
+    group: SVGElement,
+    parameter: ParameterDef,
+    anchor: { x: number; y: number },
+  ): void {
+    this.badgeAnchors.set(parameter.componentId, anchor);
+    group.addEventListener('contextmenu', (event: MouseEvent) => {
+      if (!this.options.onParameterMenu) return;
+      event.preventDefault();
+      event.stopPropagation();
+      this.options.onParameterMenu(parameter, event);
+    });
   }
 
   private parameterFor(id: string | undefined): ParameterDef | undefined {
@@ -229,6 +283,7 @@ export class ModuleView {
       this.attachDrag(group, parameter);
       group.setAttribute('tabindex', '0');
       this.attachKeys(group, parameter);
+      this.attachMenu(group, parameter, { x: cx + radius, y: cy - radius });
     }
 
     this.element.appendChild(group);
@@ -294,6 +349,7 @@ export class ModuleView {
         this.commit(parameter, next);
       });
       this.attachKeys(group, parameter);
+      this.attachMenu(group, parameter, { x: widget.x + width, y: widget.y });
     }
 
     this.element.appendChild(group);
@@ -326,6 +382,7 @@ export class ModuleView {
       this.attachDrag(group, parameter);
       group.setAttribute('tabindex', '0');
       this.attachKeys(group, parameter);
+      this.attachMenu(group, parameter, { x: widget.x + width, y: widget.y });
     }
 
     this.element.appendChild(group);
