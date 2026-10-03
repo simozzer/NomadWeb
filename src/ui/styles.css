@@ -479,6 +479,28 @@ svg.module text.panel-title { font: 700 9px ui-sans-serif, system-ui, sans-serif
 .monitor-bar { gap: 12px; flex-wrap: wrap; }
 .row--flush { margin-bottom: 0; align-items: center; }
 
+/* ---- storing a patch into a bank ---- */
+
+.store-dialog {
+  width: min(360px, calc(100vw - 32px));
+  padding: 16px 18px;
+  background: var(--panel);
+  color: var(--ink);
+  border: 1px solid var(--panel-edge);
+  border-radius: 8px;
+  box-shadow: 0 12px 32px rgba(0,0,0,.5);
+}
+
+.store-dialog::backdrop { background: rgba(0,0,0,.45); }
+.store-dialog h2 { margin: 0 0 12px; font-size: 14px; }
+.store-dialog form > label { display: flex; flex-direction: column; gap: 4px; font-size: 11px; color: var(--ink-dim); margin-bottom: 10px; }
+.store-dialog input { width: 100%; }
+.store-target { margin: 2px 0 6px; font-size: 12px; color: var(--ink-dim); min-height: 1.5em; }
+.store-target strong { color: var(--accent); font-weight: 600; }
+.store-error { margin: 0 0 8px; font-size: 12px; color: var(--bad); min-height: 1.5em; }
+.row--end { justify-content: flex-end; margin: 4px 0 0; }
+button.primary { background: color-mix(in srgb, var(--accent) 22%, #262a31); border-color: var(--accent); }
+
 /* ---- DSP load, as the original's "Load: PVA … Σ …" bars ---- */
 
 .dsp-load { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--ink-dim); }

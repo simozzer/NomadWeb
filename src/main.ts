@@ -27,8 +27,10 @@ import {
   NordModular,
   CC,
   MAX_BANKS,
+  STORE_POSITIONS,
   KNOB_NAMES,
   knobsFor,
+  patchNameProblem,
   type PatchListEntry,
   type PatchDumpReport,
 } from './midi/nord.ts';
@@ -335,6 +337,8 @@ async function main(): Promise<void> {
 
   let patches: PatchListEntry[] = [];
   let cancelled = false;
+  /** Where the patch on screen was loaded from or last stored to, if known. */
+  let loadedFrom: { bank: number; position: number } | null = null;
 
   function renderPatches(): void {
     const shown = hideEmpty.checked
@@ -363,7 +367,9 @@ async function main(): Promise<void> {
       for (const entry of byBank.get(bank)!.sort((a, b) => a.position - b.position)) {
         const row = document.createElement('button');
         row.type = 'button';
-        row.className = 'patch-row' + (entry.empty ? ' patch-row--empty' : '');
+        const isShown = loadedFrom?.bank === entry.bank && loadedFrom.position === entry.position;
+        row.className = 'patch-row' + (entry.empty ? ' patch-row--empty' : '') +
+          (isShown ? ' patch-row--active' : '');
         row.disabled = entry.empty || !entry.name;
         const pos = document.createElement('span');
         pos.className = 'patch-pos';
@@ -1126,11 +1132,11 @@ async function main(): Promise<void> {
         patchHint.textContent = `The ${device} changed patch, but sent no patch data for it.`;
         return;
       }
-      // The list only knows names, so mark the entry when exactly one matches.
-      const rows = Array.from(patchListEl.querySelectorAll<HTMLElement>('.patch-row'));
-      for (const row of rows) row.classList.remove('patch-row--active');
-      const matches = rows.filter((row) => row.lastElementChild?.textContent === patch.name);
-      if (matches.length === 1) matches[0].classList.add('patch-row--active');
+      // The device says nothing about where the patch came from, so the list
+      // can only match it by name, and only when exactly one entry has it.
+      const matches = patches.filter((p) => !p.empty && p.name === patch.name);
+      loadedFrom = matches.length === 1 ? { bank: matches[0].bank, position: matches[0].position } : null;
+      renderPatches();
       patchHint.textContent =
         `The ${device} switched to "${patch.name || '(unnamed)'}" — ` +
         `${patch.modules.length} modules, ${patch.cables.length} cables.`;
@@ -1171,6 +1177,7 @@ async function main(): Promise<void> {
           `Loaded "${entry.name}" into ${slotName}, but the device sent no patch data.`;
         return;
       }
+      loadedFrom = { bank: entry.bank, position: entry.position };
       patchHint.textContent =
         `Loaded "${patch.name || entry.name}" into ${slotName} — ` +
         `${patch.modules.length} modules, ${patch.cables.length} cables.`;
@@ -1181,6 +1188,128 @@ async function main(): Promise<void> {
         `${(error as Error).message}`;
       patchHint.textContent = `Loaded into ${slotName}; reading it back failed.`;
       log('err', (error as Error).message);
+    } finally {
+      loading = false;
+    }
+  }
+
+  // ---- storing the patch into a bank position ----
+
+  const storeButton = $<HTMLButtonElement>('store-patch');
+  const storeDialog = $<HTMLDialogElement>('store-dialog');
+  const storeName = $<HTMLInputElement>('store-name');
+  const storeBank = $<HTMLSelectElement>('store-bank');
+  const storePosition = $<HTMLSelectElement>('store-position');
+  const storeTarget = $('store-target');
+  const storeError = $('store-error');
+  const storeConfirm = $<HTMLButtonElement>('store-confirm');
+  const positionLabel = (position: number) => String(position + 1).padStart(2, '0');
+
+  for (let bank = 0; bank < MAX_BANKS; bank++) {
+    storeBank.add(new Option(`Bank ${bank + 1}`, String(bank)));
+  }
+  for (let position = 0; position < STORE_POSITIONS; position++) {
+    storePosition.add(new Option(positionLabel(position), String(position)));
+  }
+
+  const entryAt = (bank: number, position: number) =>
+    patches.find((p) => p.bank === bank && p.position === position);
+
+  /** Says what the chosen position holds now, so an overwrite is never a surprise. */
+  function describeStoreTarget(): void {
+    const bank = Number(storeBank.value);
+    const position = Number(storePosition.value);
+    const entry = entryAt(bank, position);
+    storeTarget.replaceChildren();
+    if (entry && !entry.empty && entry.name) {
+      const name = document.createElement('strong');
+      name.textContent = entry.name;
+      storeTarget.append('Replaces ', name, '.');
+      storeConfirm.textContent = 'Replace';
+    } else if (entry || patches.some((p) => p.bank === bank)) {
+      storeTarget.textContent = 'This position is empty.';
+      storeConfirm.textContent = 'Store';
+    } else {
+      storeTarget.textContent =
+        'This bank has not been read, so whatever is stored here will be replaced.';
+      storeConfirm.textContent = 'Store';
+    }
+  }
+
+  function checkStoreName(): boolean {
+    const problem = patchNameProblem(storeName.value);
+    storeError.textContent = problem ? `Can't use this name: ${problem}.` : '';
+    storeConfirm.disabled = !!problem;
+    return !problem;
+  }
+
+  storeButton.addEventListener('click', () => {
+    if (!currentPatch) return;
+    storeName.value = currentPatch.name;
+    // Offer where it came from; otherwise the first empty place the list knows of.
+    const firstEmpty = patches.find((p) => p.empty);
+    const target = loadedFrom ?? (firstEmpty && { bank: firstEmpty.bank, position: firstEmpty.position }) ??
+      { bank: 0, position: 0 };
+    storeBank.value = String(target.bank);
+    storePosition.value = String(target.position);
+    describeStoreTarget();
+    checkStoreName();
+    storeDialog.showModal();
+    storeName.select();
+  });
+
+  storeBank.addEventListener('change', describeStoreTarget);
+  storePosition.addEventListener('change', describeStoreTarget);
+  storeName.addEventListener('input', checkStoreName);
+  $('store-cancel').addEventListener('click', () => storeDialog.close());
+  $('store-form').addEventListener('submit', (event) => {
+    event.preventDefault();
+    if (!checkStoreName()) return;
+    storeDialog.close();
+    void storePatchAt(storeName.value, Number(storeBank.value), Number(storePosition.value));
+  });
+
+  /**
+   * Renames the patch in the slot if its name was changed, stores it, then
+   * reads that bank's list back: the list then shows what the device really
+   * holds there, which is also the confirmation that the store took.
+   */
+  async function storePatchAt(name: string, bank: number, position: number): Promise<void> {
+    const patch = currentPatch;
+    if (!patch || loading) return;
+    loading = true;
+    const slot = Number(slotSelect.value);
+    const where = `bank ${bank + 1}, position ${positionLabel(position)}`;
+    patchHint.textContent = `Storing "${name}" in ${where}…`;
+
+    try {
+      if (name !== patch.name) {
+        if (!send(() => nord.setPatchTitle(slot, name), `rename the patch to "${name}"`)) return;
+        patch.name = name;
+        updateSummary();
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      if (!send(() => nord.storePatch(slot, bank, position), `store "${name}" in ${where}`)) {
+        patchHint.textContent = `Could not send the store for "${name}".`;
+        return;
+      }
+      loadedFrom = { bank, position };
+
+      await new Promise((r) => setTimeout(r, 300));
+      const fresh = await nord.fetchPatchList({ banks: [bank], timeoutMs: 1500 });
+      if (fresh.length) patches = [...patches.filter((p) => p.bank !== bank), ...fresh];
+      renderPatches();
+
+      const there = entryAt(bank, position);
+      patchHint.textContent = there?.name === name
+        ? `Stored "${name}" in ${where}.`
+        : fresh.length
+          ? `Sent the store, but the device lists ${there?.name ? `"${there.name}"` : 'nothing'} in ${where}.`
+          : `Sent the store for "${name}" to ${where}; the bank could not be read back to confirm it.`;
+      log('info', patchHint.textContent);
+    } catch (error) {
+      patchHint.textContent = `Storing failed: ${(error as Error).message}`;
+      log('err', patchHint.textContent);
     } finally {
       loading = false;
     }

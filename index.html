@@ -86,6 +86,7 @@
             <span class="hint hint--inline">
               Drag a module by its body · connector to connector to patch · click a cable to disconnect · right-click a control to put it on a knob, or a module to delete it
             </span>
+            <button id="store-patch" type="button" title="Store this patch into a bank position on the device">Store…</button>
             <div class="zoom-controls">
               <button id="zoom-out" type="button" title="Zoom out">&minus;</button>
               <span id="zoom-level">100%</span>
@@ -150,6 +151,25 @@
         </section>
       </main>
     </div>
+
+    <dialog class="store-dialog" id="store-dialog" aria-labelledby="store-title">
+      <form method="dialog" id="store-form">
+        <h2 id="store-title">Store patch</h2>
+        <label>Name
+          <input id="store-name" maxlength="16" autocomplete="off" spellcheck="false" required />
+        </label>
+        <div class="row">
+          <label>Bank <select id="store-bank"></select></label>
+          <label>Position <select id="store-position"></select></label>
+        </div>
+        <p class="store-target" id="store-target"></p>
+        <p class="store-error" id="store-error" role="alert"></p>
+        <div class="row row--end">
+          <button type="button" id="store-cancel">Cancel</button>
+          <button type="submit" id="store-confirm" class="primary">Store</button>
+        </div>
+      </form>
+    </dialog>
 
     <script type="module" src="/src/main.ts"></script>
   </body>

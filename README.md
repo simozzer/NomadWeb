@@ -92,17 +92,21 @@ truth — including the checksum rule, which the grammar expresses declaratively
 - The editor follows the device: a patch chosen on its front panel
   (`NewPatchInSlot`, NMInfo sc 0x38) is read back and shown, as Nomad's
   NmMessageHandler does; the announcement a list load causes is not re-read
+- Storing the patch into a bank position (**Store…**): the dialog shows what the
+  position holds now, can rename the patch first (`SetPatchTitleMessage`, sc 0x27,
+  16 characters, printable ASCII but `~`), sends `StorePatchMessage` (ssc 0x0b),
+  then re-reads that bank so the list confirms what the device holds
 - All 45 value formatters compile and evaluate
 - Hardware knob assignments: read from the patch's knob map, shown as a strip
   above the canvas and a badge on each assigned control; right-click a control
   to put it on a knob, move it, or remove it (`KnobAssignmentMessage`, sc 0x25/0x26).
   On a Micro Modular only its three knobs are offered
 
-219 checks pass (`npm test`).
+235 checks pass (`npm test`).
 
 **Not yet done**
 
-- Storing a patch back to a bank, and .pch file import/export
+- .pch file import/export
 - Undo
 - Morph assignments and MIDI-controller mappings
 - Custom panel graphics — LFO shapes, envelope curves — drawn as placeholders
@@ -112,10 +116,14 @@ truth — including the checksum rule, which the grammar expresses declaratively
 the patch list, loading a patch into a slot, and the full patch read-back — which
 displays correctly on the canvas.
 
-Not yet confirmed on hardware: the canvas edit messages (module move, cable add and
-delete, parameter change, knob assignment, adding and deleting modules, knob follow). Nor is it confirmed that the Micro
-Modular's three knobs are knob ids 0-2 (knobs 1-3). They are verified against their bit layouts in tests, and
-they are modification-family commands, so try them on a patch you can afford to lose.
+Confirmed on a Micro Modular: deleting modules (with their cables), controls
+following knobs turned on the device, and the editor following a patch chosen on
+the device's front panel.
+
+Not yet confirmed on hardware: module move, cable add, parameter change, knob
+assignment, adding modules, and storing a patch. Nor is it confirmed that the
+Micro Modular's three knobs are knob ids 0-2 (knobs 1-3). They are verified
+against their bit layouts in tests; try them on a patch you can afford to lose.
 
 ## Licence
 

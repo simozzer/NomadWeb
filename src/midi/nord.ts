@@ -73,6 +73,24 @@ export function slotCountFor(deviceId: number): number {
 /** Banks and positions the device accepts, per GetPatchListMessage's own bounds. */
 export const MAX_BANKS = 9;
 export const MAX_POSITION = 99;
+/** A bank holds 99 patches, positions 0-98 (shown as 01-99). */
+export const STORE_POSITIONS = 99;
+
+/** Longest patch name the device keeps (SetPatchTitleMessage truncates at 16). */
+export const PATCH_NAME_LENGTH = 16;
+
+/**
+ * Why a patch name cannot be sent, or null if it can.
+ *
+ * `NmCharacter.isValid` allows letters, digits, space and the printable
+ * punctuation from `!` to `}` — every printable ASCII character but `~`.
+ */
+export function patchNameProblem(name: string): string | null {
+  if (!name.trim()) return 'the name is empty';
+  if (name.length > PATCH_NAME_LENGTH) return `the name is longer than ${PATCH_NAME_LENGTH} characters`;
+  const bad = Array.from(name).find((c) => c.charCodeAt(0) < 0x20 || c.charCodeAt(0) > 0x7d);
+  return bad ? `the device cannot store "${bad}" in a name` : null;
+}
 
 export interface PatchListEntry {
   bank: number;
@@ -561,6 +579,40 @@ export class NordModular {
           command: { ssc: 0x0a, data: { slot, section: bank, position } },
         },
       },
+    });
+  }
+
+  /**
+   * Stores the patch in a slot into a bank position, replacing what is there.
+   *
+   * Codes and nesting from `StorePatchMessage`: cc 0x17, pp 0x41, ssc 0x0b,
+   * with `data:data:command:data:slot/section/position` — LoadPatch's shape.
+   */
+  storePatch(slot: number, bank: number, position: number): Uint8Array {
+    if (slot < 0 || slot > 3) throw new RangeError(`invalid slot ${slot} (0-3)`);
+    if (bank < 0 || bank >= MAX_BANKS) throw new RangeError(`invalid bank ${bank}`);
+    if (position < 0 || position >= STORE_POSITIONS) {
+      throw new RangeError(`invalid position ${position} (0-${STORE_POSITIONS - 1})`);
+    }
+    return this.send(CC.PatchHandling, slot, {
+      data: {
+        data: {
+          pp: 0x41,
+          command: { ssc: 0x0b, data: { slot, section: bank, position } },
+        },
+      },
+    });
+  }
+
+  /**
+   * Renames the patch in a slot. `SetPatchTitleMessage`: sc 0x27 under
+   * PatchModification, the name as up to 16 characters.
+   */
+  setPatchTitle(slot: number, name: string): Uint8Array {
+    const problem = patchNameProblem(name);
+    if (problem) throw new Error(problem);
+    return this.modifyPatch(slot, 0x27, {
+      name: { chars: Array.from(name, (c) => c.charCodeAt(0)) },
     });
   }
 
