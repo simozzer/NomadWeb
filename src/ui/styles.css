@@ -678,4 +678,15 @@ svg.module .knob-badge text { font: 700 7.5px ui-sans-serif, system-ui, sans-ser
 .context-menu button:hover:not(:disabled), .context-menu button:focus-visible { background: #2e333c; outline: none; }
 .context-menu button:disabled { opacity: 1; cursor: default; color: var(--accent); }
 .context-menu .menu-detail { color: var(--ink-dim); font-size: 11px; }
+.context-menu .menu-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 3px 8px 5px;
+  font-size: 13px;
+}
+
+.context-menu .menu-row select { padding: 3px 6px; font-size: 12px; max-width: 260px; }
+
 .context-menu hr { border: 0; border-top: 1px solid var(--panel-edge); margin: 4px 0; width: 100%; }

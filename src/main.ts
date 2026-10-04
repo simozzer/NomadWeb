@@ -13,6 +13,7 @@ import {
   areaOf,
   areaBit,
   type KnobTarget,
+  type ControllerTarget,
   type Patch,
   type PatchArea,
   type PatchModule,
@@ -30,6 +31,8 @@ import {
   MAX_BANKS,
   STORE_POSITIONS,
   KNOB_NAMES,
+  CONTROLLER_NAMES,
+  isAssignableController,
   knobsFor,
   patchNameProblem,
   type PatchListEntry,
@@ -613,8 +616,11 @@ async function main(): Promise<void> {
         openKnobMenu({ area, module: module.index, parameter: parameter.index }, event),
 
       badgeFor: (module, parameter) => {
-        const knob = knobOf({ area, module: module.index, parameter: parameter.index });
-        return knob === undefined ? null : shortKnobName(knob);
+        const target = { area, module: module.index, parameter: parameter.index };
+        const knob = knobOf(target);
+        const cc = controllerOf(target);
+        const parts = [knob === undefined ? '' : shortKnobName(knob), cc === undefined ? '' : `CC${cc}`];
+        return parts.filter(Boolean).join(' ') || null;
       },
 
       onCableDelete: (cable) => {
@@ -842,6 +848,66 @@ async function main(): Promise<void> {
     refreshKnobs();
   }
 
+  // ---- MIDI controller (CC) mappings: the same rules as knobs ----
+
+  const ccLabel = (cc: number) => {
+    const name = CONTROLLER_NAMES.get(cc);
+    return name ? `CC ${cc} ${name}` : `CC ${cc}`;
+  };
+  const describeController = (c: ControllerTarget) =>
+    c.area === 'morph' ? `Morph ${c.parameter + 1}` : describeTarget({ area: c.area, module: c.module, parameter: c.parameter });
+
+  /** The controller mapped to a parameter, if any. */
+  function controllerOf(target: KnobTarget): number | undefined {
+    return currentPatch?.controllers.find((c) =>
+      c.area === target.area && c.module === target.module && c.parameter === target.parameter)?.cc;
+  }
+
+  /**
+   * Maps a controller to a parameter. A controller drives one parameter and a
+   * parameter answers one controller, so whatever the controller drove is
+   * cleared first, and a parameter that had another controller is moved.
+   */
+  function assignControllerTo(cc: number, target: KnobTarget): void {
+    const patch = currentPatch;
+    if (!patch) return;
+    const slot = Number(slotSelect.value);
+    const previous = controllerOf(target);
+    if (previous === cc) return;
+
+    const occupant = patch.controllers.find((c) => c.cc === cc);
+    if (occupant) {
+      if (!send(() => nord.assignController(slot, cc, null),
+        `clear ${ccLabel(cc)} (was ${describeController(occupant)})`)) return;
+      patch.controllers = patch.controllers.filter((c) => c !== occupant);
+    }
+
+    const sent = send(
+      () => nord.assignController(slot, previous ?? null, {
+        cc, area: areaBit(target.area), module: target.module, parameter: target.parameter,
+      }),
+      `${ccLabel(cc)} → ${describeTarget(target)}` +
+        (previous === undefined ? '' : ` (moved from CC ${previous})`),
+    );
+    if (sent) {
+      patch.controllers = patch.controllers.filter((c) => c.cc !== previous);
+      patch.controllers.push({ cc, ...target });
+    }
+    refreshKnobs();
+  }
+
+  function clearController(cc: number): void {
+    const patch = currentPatch;
+    const target = patch?.controllers.find((c) => c.cc === cc);
+    if (!patch || !target) return;
+    const slot = Number(slotSelect.value);
+    if (send(() => nord.assignController(slot, cc, null),
+      `clear ${ccLabel(cc)} (was ${describeController(target)})`)) {
+      patch.controllers = patch.controllers.filter((c) => c !== target);
+    }
+    refreshKnobs();
+  }
+
   /**
    * The strip above the canvas. On a Micro all three knobs are always shown,
    * free or not; with eighteen-plus knobs only the assigned ones are.
@@ -886,10 +952,37 @@ async function main(): Promise<void> {
       knobStrip.appendChild(chip);
     }
 
-    if (!shown.length || patch.knobs.size === 0) {
+    const controllers = [...patch.controllers].sort((a, b) => a.cc - b.cc);
+    if (controllers.length) {
+      const ccTitle = document.createElement('span');
+      ccTitle.className = 'knob-strip-title';
+      ccTitle.textContent = 'MIDI CC';
+      knobStrip.appendChild(ccTitle);
+    }
+    for (const controller of controllers) {
+      const chip = document.createElement('span');
+      chip.className = 'knob-chip';
+      const name = document.createElement('span');
+      name.className = 'knob-chip-name';
+      name.textContent = `CC ${controller.cc}`;
+      name.title = ccLabel(controller.cc);
+      const what = document.createElement('span');
+      what.className = 'knob-chip-target';
+      what.textContent = describeController(controller);
+      const clear = document.createElement('button');
+      clear.type = 'button';
+      clear.textContent = '×';
+      clear.title = `Clear ${ccLabel(controller.cc)}`;
+      clear.setAttribute('aria-label', `Clear CC ${controller.cc}`);
+      clear.addEventListener('click', () => clearController(controller.cc));
+      chip.append(name, what, clear);
+      knobStrip.appendChild(chip);
+    }
+
+    if (patch.knobs.size === 0 && !controllers.length) {
       const hint = document.createElement('span');
       hint.className = 'hint hint--inline';
-      hint.textContent = 'Right-click any knob, slider or button on a module to assign it.';
+      hint.textContent = 'Right-click any knob, slider or button on a module to put it on a knob or a MIDI CC.';
       knobStrip.appendChild(hint);
     }
   }
@@ -959,6 +1052,36 @@ async function main(): Promise<void> {
       menu.appendChild(document.createElement('hr'));
       item(`Remove from ${knobName(current)}`, '', () => clearKnob(current));
     }
+
+    // A MIDI controller: one chooser, since there are 119 of them. Each says
+    // what it drives now, so taking one over is never a surprise.
+    menu.appendChild(document.createElement('hr'));
+    const ccRow = document.createElement('label');
+    ccRow.className = 'menu-row';
+    const ccText = document.createElement('span');
+    ccText.textContent = 'MIDI CC';
+    const ccSelect = document.createElement('select');
+    ccSelect.setAttribute('aria-label', `MIDI controller for ${describeTarget(target)}`);
+    const currentCc = controllerOf(target);
+    ccSelect.add(new Option(currentCc === undefined ? 'none' : 'none (remove)', ''));
+    for (let cc = 0; cc < 120; cc++) {
+      if (!isAssignableController(cc)) continue;
+      const occupant = patch.controllers.find((c) => c.cc === cc);
+      const taken = occupant && cc !== currentCc ? ` — replaces ${describeController(occupant)}` : '';
+      ccSelect.add(new Option(`${ccLabel(cc)}${taken}`, String(cc)));
+    }
+    ccSelect.value = currentCc === undefined ? '' : String(currentCc);
+    ccSelect.addEventListener('change', () => {
+      const chosen = ccSelect.value;
+      closeKnobMenu();
+      if (chosen === '') {
+        if (currentCc !== undefined) clearController(currentCc);
+      } else {
+        assignControllerTo(Number(chosen), target);
+      }
+    });
+    ccRow.append(ccText, ccSelect);
+    menu.appendChild(ccRow);
 
     document.body.appendChild(menu);
     // Keep the whole menu on screen near the pointer.

@@ -113,6 +113,31 @@ process.stdout.write('\nAssignments the device reports (NMInfo)\n');
       changeBody?.items.get('data')?.items.get('data')?.values.get('knob') === 2, '');
 }
 
+process.stdout.write('\nMIDI controller mappings (MidiCtrlAssignmentMessage)\n');
+{
+  const { isAssignableController } = await import('../src/midi/nord.ts');
+  const fresh = nord.assignController(0, null, { cc: 7, area: 1, module: 3, parameter: 0 });
+  process.stdout.write(`  ${hex(fresh)}\n`);
+  check('a new mapping: sc 0x22, section module parameter cc',
+    fresh[5] === 0x22 && payloadOf(fresh).join() === '1,3,0,7', payloadOf(fresh).join(' '));
+  check('re-decodes in full with a valid checksum', consumed(fresh));
+
+  const moved = nord.assignController(0, 7, { cc: 74, area: 0, module: 2, parameter: 5 });
+  check('moving it: sc 0x23 quoting the old cc, then 0x22 and the new mapping',
+    moved[5] === 0x23 && payloadOf(moved).join() === '7,34,0,2,5,74', payloadOf(moved).join(' '));
+  check('re-decodes in full with a valid checksum', consumed(moved));
+
+  const cleared = nord.assignController(0, 74, null);
+  check('removing it: sc 0x23 with only the cc', cleared[5] === 0x23 && payloadOf(cleared).join() === '74');
+  check('re-decodes in full with a valid checksum', consumed(cleared));
+
+  const throwsFor = (fn: () => unknown) => { try { fn(); return false; } catch { return true; } };
+  check('CC 32 and 120 are refused, as Nomad refuses them',
+    throwsFor(() => nord.assignController(0, null, { cc: 32, area: 1, module: 1, parameter: 0 })) &&
+      throwsFor(() => nord.assignController(0, null, { cc: 120, area: 1, module: 1, parameter: 0 })) &&
+      isAssignableController(0) && isAssignableController(119));
+}
+
 process.stdout.write('\nA knob turned on the device (KnobChange / ParameterChange)\n');
 {
   // Both arrive with sc 0x40 and the same four fields, where the editor reads them.

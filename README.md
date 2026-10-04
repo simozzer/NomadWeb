@@ -116,14 +116,17 @@ truth — including the checksum rule, which the grammar expresses declaratively
   above the canvas and a badge on each assigned control; right-click a control
   to put it on a knob, move it, or remove it (`KnobAssignmentMessage`, sc 0x25/0x26).
   On a Micro Modular only its three knobs are offered
+- MIDI controller mappings: the same right-click menu maps a control to a CC
+  (0-119 but 32, as Nomad allows), listing what each CC drives now; they show in
+  the strip and on the control's badge (`MidiCtrlAssignmentMessage`, sc 0x22/0x23)
 
-269 checks pass (`npm test`).
+276 checks pass (`npm test`).
 
 **Not yet done**
 
 - Undo
-- Editing morph assignments and MIDI-controller mappings (they are read, kept,
-  saved and sent, but there is no way to change them yet)
+- Editing morph assignments (they are read, kept, saved and sent, but there is
+  no way to change them yet)
 - Custom panel graphics — LFO shapes, envelope curves — drawn as placeholders
 - Meters and LEDs are decoded but not shown on the panels
 
@@ -136,7 +139,8 @@ following knobs turned on the device, and the editor following a patch chosen on
 the device's front panel.
 
 Not yet confirmed on hardware: module move, cable add, parameter change, knob
-assignment, adding modules, storing a patch, and sending a .pch file to the slot.
+assignment, MIDI controller mapping, adding modules, storing a patch, and
+sending a .pch file to the slot.
 Nor is it confirmed that the Clavia editor opens the .pch files saved here. Nor is it confirmed that the
 Micro Modular's three knobs are knob ids 0-2 (knobs 1-3). They are verified
 against their bit layouts in tests; try them on a patch you can afford to lose.

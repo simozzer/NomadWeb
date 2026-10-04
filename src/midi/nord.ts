@@ -50,6 +50,22 @@ export function knobsFor(deviceId: number | undefined): number[] {
   return deviceId === 0x02 ? [0, 1, 2] : [...KNOB_NAMES.keys()];
 }
 
+/**
+ * MIDI controllers a parameter can be mapped to: 0-119 but 32, as Nomad's
+ * PatchBuilder enforces. 32 is bank select's low byte, and 120 up are
+ * channel mode messages.
+ */
+export const isAssignableController = (cc: number) =>
+  Number.isInteger(cc) && cc >= 0 && cc < 120 && cc !== 32;
+
+/** General MIDI names for the controllers people usually mean. */
+export const CONTROLLER_NAMES: ReadonlyMap<number, string> = new Map([
+  [0, 'Bank select'], [1, 'Modulation'], [2, 'Breath'], [4, 'Foot'], [5, 'Portamento time'],
+  [7, 'Volume'], [8, 'Balance'], [10, 'Pan'], [11, 'Expression'], [12, 'Effect 1'], [13, 'Effect 2'],
+  [64, 'Sustain'], [65, 'Portamento'], [66, 'Sostenuto'], [67, 'Soft pedal'], [71, 'Resonance'],
+  [72, 'Release'], [73, 'Attack'], [74, 'Cutoff'], [91, 'Reverb'], [93, 'Chorus'],
+]);
+
 export interface DeviceIdentity {
   deviceId: number;
   deviceName: string;
@@ -1064,6 +1080,40 @@ export class NordModular {
     return this.modifyPatch(slot, 0x26, fields
       ? { prevknob: previousKnob, data: { data: fields } }
       : { prevknob: previousKnob });
+  }
+
+  /**
+   * Maps a MIDI controller to a parameter, or removes a mapping. The same
+   * scheme as knobs (`MidiCtrlAssignmentMessage.assign`):
+   *
+   * - no previous controller: `sc` 0x22 with the new mapping;
+   * - a previous one: `sc` 0x23 quoting it, then the new mapping nested as a
+   *   0x22 packet — or nothing, which removes that controller's mapping.
+   *
+   * `previousCc` is the controller the *parameter* had before. Area 2 is the
+   * morph group, as in the patch's controller map.
+   */
+  assignController(
+    slot: number,
+    previousCc: number | null,
+    assignment: { cc: number; area: 0 | 1 | 2; module: number; parameter: number } | null,
+  ): Uint8Array {
+    if (previousCc === null && !assignment) {
+      throw new Error('previous and new controller can not both be empty');
+    }
+    for (const cc of [previousCc, assignment?.cc]) {
+      if (cc != null && !isAssignableController(cc)) throw new RangeError(`CC ${cc} cannot be assigned`);
+    }
+    const fields = assignment && {
+      section: assignment.area,
+      module: assignment.module,
+      parameter: assignment.parameter,
+      midictrl: assignment.cc,
+    };
+    if (previousCc === null) return this.modifyPatch(slot, 0x22, fields!);
+    return this.modifyPatch(slot, 0x23, fields
+      ? { prevmidictrl: previousCc, data: { data: fields } }
+      : { prevmidictrl: previousCc });
   }
 
   /** Sets a single parameter value. `sc` 0x40 under the Parameter command. */
