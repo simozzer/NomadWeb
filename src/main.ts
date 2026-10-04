@@ -20,6 +20,7 @@ import {
 import type { Decoded } from './pdl2/interpreter.ts';
 import { ModuleView } from './ui/moduleView.ts';
 import { patchLoad, moduleCycles, formatLoad, MAX_LOAD } from './model/load.ts';
+import { parsePch, writePch } from './model/pch.ts';
 import { PatchView } from './ui/patchView.ts';
 import { ModuleToolbar, type ToolbarLayout } from './ui/moduleToolbar.ts';
 import { WebMidiTransport, MidiUnavailableError } from './midi/webmidi.ts';
@@ -260,6 +261,7 @@ async function main(): Promise<void> {
       slotSelect.disabled = identity.slotCount === 1;
 
       $<HTMLButtonElement>('fetch-patches').disabled = false;
+      $<HTMLButtonElement>('open-file').disabled = false;
       $('patch-hint').textContent =
         'Ready. Reading all banks takes a moment; a single bank is quicker.';
     } catch (error) {
@@ -581,6 +583,11 @@ async function main(): Promise<void> {
           `${where}#${module.index} ${parameter.name} = ${value} ` +
             `(${formatters.format(parameter.formatter, value)})`,
         );
+        // Kept in the patch too, so saving it to a file saves what you hear.
+        const def = catalogue.modules.get(module.type);
+        const position = def ? controlParameters(def).findIndex((p) => p.index === parameter.index) : -1;
+        const stored = patch.parameters.find((p) => p.area === area)?.byModule.get(module.index);
+        if (stored && position >= 0) stored[position] = value;
       },
 
       onModuleMove: (module, x, y) => {
@@ -1315,6 +1322,132 @@ async function main(): Promise<void> {
     }
   }
 
+  // ---- .pch files: save the patch on screen, open one into the slot ----
+
+  /** A .pch is ISO-8859-1 (NmUtils.writePatch); anything wider becomes "?". */
+  const latin1 = (text: string) =>
+    Uint8Array.from(text, (c) => (c.charCodeAt(0) <= 0xff ? c.charCodeAt(0) : 0x3f));
+
+  $('save-file').addEventListener('click', async () => {
+    const patch = currentPatch;
+    if (!patch) return;
+    const bytes = latin1(writePch(patch));
+    const suggestedName = `${(patch.name || 'patch').replace(/[\\/:*?"<>|]/g, '_')}.pch`;
+
+    // Chrome and Edge let you choose where it goes; elsewhere it downloads.
+    const picker = (window as unknown as {
+      showSaveFilePicker?: (options: object) => Promise<{
+        name: string;
+        createWritable: () => Promise<{ write: (data: BufferSource) => Promise<void>; close: () => Promise<void> }>;
+      }>;
+    }).showSaveFilePicker;
+    try {
+      if (picker) {
+        const handle = await picker({
+          suggestedName,
+          types: [{ description: 'Nord Modular patch', accept: { 'application/octet-stream': ['.pch'] } }],
+        });
+        const writable = await handle.createWritable();
+        await writable.write(bytes);
+        await writable.close();
+        patchHint.textContent = `Saved "${patch.name}" as ${handle.name}.`;
+      } else {
+        const link = document.createElement('a');
+        link.href = URL.createObjectURL(new Blob([bytes], { type: 'application/octet-stream' }));
+        link.download = suggestedName;
+        link.click();
+        setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+        patchHint.textContent = `Saved "${patch.name}" as ${suggestedName}.`;
+      }
+      log('info', patchHint.textContent);
+    } catch (error) {
+      if ((error as Error).name === 'AbortError') return; // the picker was cancelled
+      patchHint.textContent = `Saving failed: ${(error as Error).message}`;
+      log('err', patchHint.textContent);
+    }
+  });
+
+  const openInput = $<HTMLInputElement>('open-file-input');
+  $('open-file').addEventListener('click', () => openInput.click());
+  openInput.addEventListener('change', () => {
+    const file = openInput.files?.[0];
+    openInput.value = ''; // so choosing the same file again still fires
+    if (file) void openPatchFile(file);
+  });
+
+  /** Why a patch from a file cannot go to the device, or null if it can. */
+  function fileProblem(patch: Patch): string | null {
+    const unknown = [...new Set(patch.modules.filter((m) => !catalogue.modules.has(m.type)).map((m) => m.type))];
+    if (unknown.length) return `it uses module types this editor does not know (${unknown.join(', ')})`;
+    const load = patchLoad(patch, catalogue).total;
+    if (load > MAX_LOAD) return `it needs ${formatLoad(load)} of the DSP`;
+    return null;
+  }
+
+  /**
+   * Reads a .pch file and sends it into the slot, replacing the patch there —
+   * StorePatchInSlotWorker's upload — then reads the slot back, so the editor
+   * shows what the device now holds. Notes, which the device has no room for,
+   * are carried over from the file so saving keeps them.
+   */
+  async function openPatchFile(file: File): Promise<void> {
+    if (loading || !connected) return;
+    const slot = Number(slotSelect.value);
+    const slotName = slotSelect.selectedOptions[0]?.textContent ?? `slot ${slot}`;
+
+    let patch: Patch;
+    try {
+      patch = parsePch(new TextDecoder('latin1').decode(await file.arrayBuffer()), file.name);
+    } catch (error) {
+      patchHint.textContent = `Can't open ${file.name}: ${(error as Error).message}.`;
+      log('err', patchHint.textContent);
+      return;
+    }
+    const problem = fileProblem(patch);
+    if (problem) {
+      patchHint.textContent = `Can't send ${file.name} to the device: ${problem}.`;
+      log('err', patchHint.textContent);
+      return;
+    }
+    if (currentPatch && !confirm(
+      `Send "${patch.name}" to the ${slotName}? It replaces "${currentPatch.name}" there; ` +
+        'changes not stored to a bank or saved to a file are lost.',
+    )) return;
+
+    loading = true;
+    showEditor(true);
+    patchHint.textContent = `Sending "${patch.name}" to the ${slotName}…`;
+    followPid = null;
+    try {
+      const sections = patchWriter.patchSections(patch);
+      const pid = await nord.uploadPatch(slot, sections, (sent, total) => {
+        patchHint.textContent = `Sending "${patch.name}" to the ${slotName}… ${sent}/${total}`;
+      });
+      log('info', `sent "${patch.name}" from ${file.name}: ${sections.length} sections, patch id ${pid}`);
+
+      const report = await nord.fetchPatch(slot);
+      const back = showFetched(report, slotName);
+      shownPid = followPid ?? nord.getActivePid(slot);
+      loadedFrom = null;
+      renderPatches();
+      if (!back) {
+        patchHint.textContent = `Sent "${patch.name}", but reading the slot back returned no patch data.`;
+        return;
+      }
+      back.notes = patch.notes;
+      const missing = patch.modules.length - back.modules.length;
+      patchHint.textContent = missing
+        ? `Sent "${patch.name}", but the device holds ${back.modules.length} of its ${patch.modules.length} modules.`
+        : `Opened "${patch.name}" from ${file.name} into the ${slotName}.`;
+      log(missing ? 'err' : 'info', patchHint.textContent);
+    } catch (error) {
+      patchHint.textContent = `Sending "${patch.name}" failed: ${(error as Error).message}`;
+      log('err', patchHint.textContent);
+    } finally {
+      loading = false;
+    }
+  }
+
   /** Empties both areas, leaving the voice pane free for a message. */
   function clearCanvases(): void {
     views.clear();
@@ -1501,9 +1634,13 @@ async function main(): Promise<void> {
   function forgetModule(patch: Patch, area: PatchArea, index: number): void {
     patch.modules = patch.modules.filter((m) => !(m.area === area && m.index === index));
     patch.parameters.find((p) => p.area === area)?.byModule.delete(index);
+    patch.customs.find((c) => c.area === area)?.byModule.delete(index);
     for (const [knob, target] of [...patch.knobs]) {
       if (target.area === area && target.module === index) patch.knobs.delete(knob);
     }
+    // The device drops these with the module; a saved file must not keep them.
+    patch.morphs.assignments = patch.morphs.assignments.filter((a) => !(a.area === area && a.module === index));
+    patch.controllers = patch.controllers.filter((c) => !(c.area === area && c.module === index));
     if (selection?.area === area && selection.index === index) selection = null;
     refreshKnobs();
     updateSummary();
@@ -1635,6 +1772,14 @@ async function main(): Promise<void> {
       patch.parameters.push(dump);
     }
     dump.byModule.set(index, parameters);
+    if (customs.length) {
+      let customDump = patch.customs.find((c) => c.area === area);
+      if (!customDump) {
+        customDump = { area, byModule: new Map() };
+        patch.customs.push(customDump);
+      }
+      customDump.byModule.set(index, customs);
+    }
     view.addModule(module);
 
     loadedHint.textContent = '';

@@ -54,6 +54,8 @@
           <div class="row">
             <button id="fetch-patches" type="button" disabled>Fetch patch list</button>
             <button id="cancel-patches" type="button" hidden>Cancel</button>
+            <button id="open-file" type="button" disabled title="Send a .pch file to the patch slot">Open file…</button>
+            <input id="open-file-input" type="file" accept=".pch" hidden />
             <label class="inline">
               <input type="checkbox" id="hide-empty" checked /> hide empty
             </label>
@@ -89,6 +91,7 @@
               Drag a module by its body · connector to connector to patch · click a cable to disconnect · right-click a control to put it on a knob, or a module to delete it
             </span>
             <button id="store-patch" type="button" title="Store this patch into a bank position on the device">Store…</button>
+            <button id="save-file" type="button" title="Save this patch as a .pch file, as the Clavia editor does">Save file…</button>
             <div class="zoom-controls">
               <button id="zoom-out" type="button" title="Zoom out">&minus;</button>
               <span id="zoom-level">100%</span>

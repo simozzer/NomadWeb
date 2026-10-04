@@ -235,8 +235,8 @@ process.stdout.write('\nParts parsed separately (not concatenated)\n');
 
 process.stdout.write('\nLayout scheme detection\n');
 {
-  const { describeLayoutScheme } = await import('../src/model/patch.ts');
-  const base = { name: '', cables: [], parameters: [], knobs: new Map(), sections: new Map() };
+  const { describeLayoutScheme, createPatch } = await import('../src/model/patch.ts');
+  const base = createPatch();
 
   // Ranks within a column: consecutive integers.
   const ordinal = describeLayoutScheme({

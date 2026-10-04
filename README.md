@@ -103,19 +103,27 @@ truth — including the checksum rule, which the grammar expresses declaratively
   position holds now, can rename the patch first (`SetPatchTitleMessage`, sc 0x27,
   16 characters, printable ASCII but `~`), sends `StorePatchMessage` (ssc 0x0b),
   then re-reads that bank so the list confirms what the device holds
+- .pch files, the Clavia editor's format (`src/model/pch.ts`). **Save file…**
+  writes the patch on screen as Nomad's PatchExporter / PatchFileWriter do.
+  **Open file…** reads one (PParser's rules), sends it into the slot as the
+  sixteen one-section packets of `StorePatchInSlotWorker` (cc 0x1d…0x1e, command
+  1, each answered before the next), then reads the slot back. The notes text,
+  which the device cannot hold, is carried over from the file. Nomad's sample
+  patches are the test fixtures. Where Nomad's upload sends the morph knob values
+  as the keyboard assignments and ranges, this sends the real ones
 - All 45 value formatters compile and evaluate
 - Hardware knob assignments: read from the patch's knob map, shown as a strip
   above the canvas and a badge on each assigned control; right-click a control
   to put it on a knob, move it, or remove it (`KnobAssignmentMessage`, sc 0x25/0x26).
   On a Micro Modular only its three knobs are offered
 
-235 checks pass (`npm test`).
+269 checks pass (`npm test`).
 
 **Not yet done**
 
-- .pch file import/export
 - Undo
-- Morph assignments and MIDI-controller mappings
+- Editing morph assignments and MIDI-controller mappings (they are read, kept,
+  saved and sent, but there is no way to change them yet)
 - Custom panel graphics — LFO shapes, envelope curves — drawn as placeholders
 - Meters and LEDs are decoded but not shown on the panels
 
@@ -128,7 +136,8 @@ following knobs turned on the device, and the editor following a patch chosen on
 the device's front panel.
 
 Not yet confirmed on hardware: module move, cable add, parameter change, knob
-assignment, adding modules, and storing a patch. Nor is it confirmed that the
+assignment, adding modules, storing a patch, and sending a .pch file to the slot.
+Nor is it confirmed that the Clavia editor opens the .pch files saved here. Nor is it confirmed that the
 Micro Modular's three knobs are knob ids 0-2 (knobs 1-3). They are verified
 against their bit layouts in tests; try them on a patch you can afford to lose.
 

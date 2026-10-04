@@ -17,6 +17,7 @@ const { document } = parseHTML('<html><body></body></html>');
 const { parseModuleCatalogue } = await import('../src/model/modules.ts');
 const { parseTheme } = await import('../src/model/theme.ts');
 const { ModuleView } = await import('../src/ui/moduleView.ts');
+const { createPatch } = await import('../src/model/patch.ts');
 
 const read = (n: string) =>
   readFileSync(new URL(`../public/data/${n}`, import.meta.url), 'utf8');
@@ -64,8 +65,8 @@ process.stdout.write('\nDeleting a module takes its cables with it\n');
 {
   const { PatchView } = await import('../src/ui/patchView.ts');
   const events: string[] = [];
-  const patch = {
-    name: 'T', parameters: [], knobs: new Map(), sections: new Map(),
+  const patch = createPatch({
+    name: 'T',
     modules: [
       { area: 'voice' as const, type: 7, index: 1, x: 0, y: 0 },   // OscA
       { area: 'voice' as const, type: 20, index: 2, x: 0, y: 6 },  // ADSR
@@ -76,7 +77,7 @@ process.stdout.write('\nDeleting a module takes its cables with it\n');
       { area: 'voice' as const, color: 1, sourceModule: 2, sourceConnector: 0, sourceIsOutput: 1, destModule: 1, destConnector: 1 },
       { area: 'voice' as const, color: 0, sourceModule: 2, sourceConnector: 0, sourceIsOutput: 1, destModule: 3, destConnector: 1 },
     ],
-  };
+  });
   const view = new PatchView({
     patch, area: 'voice', catalogue, theme,
     onCableDelete: (c) => events.push(`cable ${c.sourceModule}->${c.destModule}`),
@@ -215,7 +216,7 @@ process.stdout.write('\nModules sit on the grid exactly as the original places t
     { area: 'voice' as const, type: 4,  index: 2, x: 0, y: 9 },  // gap of 4 rows
     { area: 'voice' as const, type: 20, index: 3, x: 2, y: 3 },  // empty column 1
   ];
-  const patch = { name: 'T', modules, cables: [], parameters: [], knobs: new Map(), sections: new Map() };
+  const patch = createPatch({ name: 'T', modules });
   const view = new PatchView({ patch, area: 'voice', catalogue, theme });
 
   const boxes = new Map(Array.from(view.element.querySelectorAll('g.patch-module')).map((g) => {
@@ -243,7 +244,7 @@ process.stdout.write('\nModules sit on the grid exactly as the original places t
   ];
   const sent: string[] = [];
   const rankedView = new PatchView({
-    patch: { ...patch, modules: ranked }, area: 'voice', catalogue, theme,
+    patch: createPatch({ name: 'T', modules: ranked }), area: 'voice', catalogue, theme,
     onModuleMove: (m, x, y) => sent.push(`#${m.index}->${x},${y}`),
   });
   check('rank-written positions are detected as overlapping', rankedView.overlapCount === 3,

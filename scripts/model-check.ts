@@ -186,12 +186,12 @@ process.stdout.write('\nDSP load\n');
   // The House Bass patch, which the Clavia editor shows as "PVA 41.4%  Σ 41.4%".
   const houseBass = ['OscA', 'OscA', 'OscSlvA', 'Mixer (3)', 'FilterE', 'ADSR', 'ADSR', 'Keyboard', '2Output']
     .map((name, i) => ({ area: 'voice' as const, type: byName(name), index: i + 1, x: 0, y: i * 6 }));
-  const base = { name: '', cables: [], parameters: [], knobs: new Map(), sections: new Map() };
-  const load = patchLoad({ ...base, modules: houseBass }, catalogue);
+  const { createPatch } = await import('../src/model/patch.ts');
+  const load = patchLoad(createPatch({ modules: houseBass }), catalogue);
   check('matches the Clavia editor on a real patch', formatLoad(load.voice) === '41.4%' && formatLoad(load.total) === '41.4%',
     `voice ${load.voice}, total ${load.total}`);
-  const withFx = patchLoad({ ...base, modules: [...houseBass,
-    { area: 'common' as const, type: byName('Mixer (3)'), index: 1, x: 0, y: 0 }] }, catalogue);
+  const withFx = patchLoad(createPatch({ modules: [...houseBass,
+    { area: 'common' as const, type: byName('Mixer (3)'), index: 1, x: 0, y: 0 }] }), catalogue);
   check('the common area counts toward the total, not the voice figure',
     withFx.voice === load.voice && withFx.total > load.total, `+${(withFx.total - load.total).toFixed(3)}`);
 }

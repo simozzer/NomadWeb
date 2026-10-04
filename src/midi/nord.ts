@@ -230,22 +230,38 @@ export function pack7Bit(bitstream: Uint8Array, bitLength = bitstream.length * 8
 }
 
 /**
- * Frames a patch fragment as one patch packet, the way `NewModuleMessage`
- * does: cc 0x1f (first and last of its run), then `0:1 command:1 pid:6` with
- * command 0, the 7-bit payload, and the usual checksum.
+ * Frames a patch fragment as one patch packet: cc 0x1c plus the first (1) and
+ * last (2) flags, then the byte `0:1 command:1 pid:6`, the 7-bit payload and
+ * the usual checksum.
+ *
+ * `NewModuleMessage` sends a lone packet (both flags) with command 0 and the
+ * slot's patch id. A whole patch (`PatchMessage`) is one packet per section,
+ * with command 1 and the section's number, from 1, in place of the id.
  */
 export function patchPacket(
   slot: number,
   pid: number,
   fragment: { bytes: Uint8Array; bitLength: number },
+  { first = true, last = true, command = 0 }: { first?: boolean; last?: boolean; command?: 0 | 1 } = {},
 ): Uint8Array {
+  const cc = CC.PatchPacketBase | (first ? 1 : 0) | (last ? 2 : 0);
   const bytes = [
-    0xf0, 0x33, ((CC.PatchPacketBase | 0x03) << 2) | (slot & 0x03), 0x06,
-    pid & 0x3f,
+    0xf0, 0x33, (cc << 2) | (slot & 0x03), 0x06,
+    (command << 6) | (pid & 0x3f),
     ...pack7Bit(fragment.bytes, fragment.bitLength),
   ];
   bytes.push(bytes.reduce((sum, b) => sum + b, 0) % 128, 0xf7);
   return Uint8Array.from(bytes);
+}
+
+/** The packets that carry a whole patch, as `Patch2BitstreamBuilder.createMessages` makes them. */
+export function patchUploadPackets(
+  slot: number,
+  sections: { bytes: Uint8Array; bitLength: number }[],
+): Uint8Array[] {
+  return sections.map((section, i) => patchPacket(slot, i + 1, section, {
+    first: i === 0, last: i === sections.length - 1, command: 1,
+  }));
 }
 
 export interface PatchDumpReport {
@@ -903,6 +919,62 @@ export class NordModular {
     this.transport.send(message);
     this.record({ direction: 'out', at: Date.now(), hex: formatSysex(message) });
     return message;
+  }
+
+  /**
+   * Sends a whole patch into a slot, replacing what is there
+   * (`StorePatchInSlotWorker`). Nothing is sent first: the packets alone do it.
+   *
+   * Packets go one at a time. Each expects a reply, and Nomad's send queue
+   * waits for one (an ACK, or an error) before sending the next, giving up
+   * after three seconds. The last reply's `pid1` is the slot's new patch id.
+   */
+  async uploadPatch(
+    slot: number,
+    sections: { bytes: Uint8Array; bitLength: number }[],
+    onProgress?: (sent: number, total: number) => void,
+  ): Promise<number> {
+    if (slot < 0 || slot > 3) throw new RangeError(`invalid slot ${slot} (0-3)`);
+    const packets = patchUploadPackets(slot, sections);
+    let pid = this.getActivePid(slot);
+
+    for (const [i, packet] of packets.entries()) {
+      const reply = this.waitForReply(slot, 3000);
+      reply.catch(() => {});
+      this.transport.send(packet);
+      this.record({ direction: 'out', at: Date.now(), hex: formatSysex(packet) });
+      const answer = await reply.catch((error: Error) => {
+        throw new Error(`section ${i + 1} of ${packets.length}: ${error.message}`);
+      });
+      if (answer.messageId === 'error') {
+        const data = answer.root.items.get('data');
+        const code = data && !Array.isArray(data) ? data.items.get('data') : undefined;
+        const value = code && !Array.isArray(code) ? code.values.get('code') : undefined;
+        throw new Error(`the device refused section ${i + 1} of ${packets.length} (error ${value ?? '?'})`);
+      }
+      const data = answer.root.items.get('data');
+      const pid1 = data && !Array.isArray(data) ? data.values.get('pid1') : undefined;
+      if (pid1 !== undefined) pid = pid1;
+      onProgress?.(i + 1, packets.length);
+    }
+    return pid;
+  }
+
+  /** The next ACK or error for a slot: what the device answers a packet with. */
+  private waitForReply(slot: number, timeoutMs: number): Promise<DecodeResult> {
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        dispose();
+        reject(new Error(`no reply from the device within ${timeoutMs / 1000} s`));
+      }, timeoutMs);
+      const dispose = this.addListener((message) => {
+        if (message.messageId !== 'ack' && message.messageId !== 'error') return;
+        if (message.root.values.get('slot') !== slot) return;
+        clearTimeout(timer);
+        dispose();
+        resolve(message);
+      });
+    });
   }
 
   /** Moves a module on the patch grid. `sc` 0x34, per MoveModuleMessage. */

@@ -4,7 +4,7 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "node scripts/parse-check.ts && node scripts/decode-check.ts && node scripts/iam-check.ts && node scripts/encode-check.ts && node scripts/patchlist-check.ts && node scripts/patch-check.ts && node scripts/edit-check.ts && node scripts/pid-check.ts && node scripts/parts-check.ts && node scripts/gesture-check.ts && node scripts/model-check.ts && node scripts/knob-check.ts && node scripts/layout-check.ts && node scripts/newmodule-check.ts && node scripts/store-check.ts",
+    "test": "node scripts/parse-check.ts && node scripts/decode-check.ts && node scripts/iam-check.ts && node scripts/encode-check.ts && node scripts/patchlist-check.ts && node scripts/patch-check.ts && node scripts/edit-check.ts && node scripts/pid-check.ts && node scripts/parts-check.ts && node scripts/gesture-check.ts && node scripts/model-check.ts && node scripts/knob-check.ts && node scripts/layout-check.ts && node scripts/newmodule-check.ts && node scripts/store-check.ts && node scripts/pch-check.ts",
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "check": "tsc --noEmit"
